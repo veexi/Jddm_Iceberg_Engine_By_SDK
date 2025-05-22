@@ -28,12 +28,18 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.tools.picocli.CommandLine;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.jar.Manifest;
 
 /**
  * className: StartIcebergEngine<br>
@@ -46,6 +52,7 @@ public class StartIcebergEngine {
     private final static String LOG_XML_PATH = "config/log4jConfig.xml";
     private static  String hiveFilePath = "hdfsFile";
     private static int totalSyncNO=1;
+    public static final String version = IcebergValidator.class.getPackage().getImplementationVersion();
     /*** *** *** ***
      * @functionName（方法名称）: main
      * @description （方法说明）: 启动入口
@@ -56,6 +63,7 @@ public class StartIcebergEngine {
      * @since       （创建时间）: 2025/5/22 16:55
      ***/
     public static void main(String[] args) throws Exception {
+
         Properties properties = new Properties();
         try {
 
@@ -74,11 +82,10 @@ public class StartIcebergEngine {
                 throw new Exception("Config parameters initialization failed, please check!");
             }
 
-            IcebergValidator icebergValidator = new IcebergValidator();
-            icebergValidator.validateTableOperations();
             if (initializeServices()){
 
             }
+            printAsciiVerison(initializeServices());
 
 
             properties.setProperty("ServerPort", Constant.socketServerPort);
@@ -177,6 +184,71 @@ public class StartIcebergEngine {
 
         }
         return returnFlag;
+    }
+
+    public static void printAsciiVerison(boolean initializeFlag){
+        String logLevel = "INFO";
+        Logger log = LogManager.getLogger(StartIcebergEngine.class);
+        System.out.format("%s\n", " ");
+        System.out.format("%s\n", "                    _     _                ");
+        System.out.format("%s\n", "   __ _ _          | |   | |         __ _ _");
+        System.out.format("%s\n", "  / / / /    (_) __| | __| |__ _ __  \\ \\ \\ \\");
+        System.out.format("%s\n", " / / / /     | |/ _' |/ _' | _   _ |  \\ \\ \\ \\");
+        System.out.format("%s\n", "( ( ( (      | | (_| | (_| | || || |   ) ) ) )");
+        System.out.format("%s\n", " \\ \\ \\ \\   __, '\\.__/'\\.__/'_||_||_|  / / / /");
+        System.out.format("%s\n", "  \\_\\_\\_\\ |___/===================== /_/_/_/");
+        System.out.format("%s\n", "    :: Dsg(java)Data EngineModuel ::      (v"+version+")");
+        System.out.format("%s\n", " ");
+        System.out.println("\t 32&64 bit (PROD), build#1,"+getBuildTimeString());
+        log.info(" ");
+
+        log.info("Jddm Iceberg Engine :: ("+version+")");
+
+        String currentDir = System.getProperty("user.dir");
+        String parentDir = new File(currentDir).getParent();
+        if (Constant.LOG_AGENT_LEVEL==2000){
+            logLevel = "DEBUG";
+        }
+        log.info("Build Time :: " + getBuildTimeString());
+        log.info("ICEBERG_ENGINE WORKING DIR :: " + parentDir);
+        log.info("LOG LEVEL :: " + logLevel);
+
+        if (initializeFlag){
+            log.info("Initializing Jddm Iceberg Engine Successfully.");
+        }else {
+            log.error("Initializing Jddm Iceberg Engine Failed.");
+        }
+        log.info("Iceberg version :: "+ org.apache.iceberg.Table.class.getPackage().getImplementationVersion());
+        log.info("Validating engine connection to Iceberg source...");
+        IcebergValidator icebergValidator = new IcebergValidator();
+        try {
+            icebergValidator.validateTableOperations();
+        }catch (Exception e){
+            throw new RuntimeException("Iceberg connection validate failed",e);
+        }finally {
+            icebergValidator=null;
+        }
+
+        log.info("Jddm Iceberg Engine started successfully.");
+        log.info("...");
+    }
+
+    public static String getBuildTimeString(){
+        String returnTime = "";
+        try (InputStream in =
+                     IcebergValidator.class.getClassLoader()
+                             .getResourceAsStream("META-INF/MANIFEST.MF")) {
+            Manifest mf = new Manifest(in);
+            String timestamp = mf.getMainAttributes()
+                    .getValue("Build-Timestamp");
+            OffsetDateTime utc = OffsetDateTime.parse(timestamp);
+            // 2. 改变偏移量到 +08:00（同一时刻）
+            OffsetDateTime beijing = utc.withOffsetSameInstant(ZoneOffset.ofHours(8));
+            returnTime = beijing.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        return returnTime;
     }
     public static int getTotalSyncNO() {
         return totalSyncNO;
