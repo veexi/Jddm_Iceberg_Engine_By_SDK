@@ -17,6 +17,8 @@ public class Constant {
 	//2023/9/19 16:18 PM; Auth:JH;
 	public static Integer hiveDiffTimers=60;
 	public static String basicWorkPath="";
+	public static String socketServerPort="8313";
+	public static String socketThreadPoolSize="20";
 
 }
 

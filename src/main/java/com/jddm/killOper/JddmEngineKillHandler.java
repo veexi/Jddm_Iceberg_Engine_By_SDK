@@ -167,6 +167,17 @@ public class JddmEngineKillHandler implements SignalHandler{
 
 				}
 			}
+			try {
+				System.out.println("["+OperationTimes.printDataTime()+"] EXIT [StartJddmGeneralEngine] "+Constant.JddmEngineTypeInfo+"Begin Stop Please Waitting (3)Seconds ... ... ");
+				Thread.sleep(300);
+			} catch (InterruptedException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+			EngineStateInfo.writeEngineStateForJddm("stop", "sucess");
+			System.out.println("["+OperationTimes.printDataTime()+"] EXIT [StartJddmGeneralEngine] "+Constant.JddmEngineTypeInfo+" Stoped Complete ! ");
+			System.out.println(" ");
+			System.exit(-1);
 		}
 	}
 	/***

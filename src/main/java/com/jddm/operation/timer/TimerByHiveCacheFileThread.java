@@ -75,7 +75,6 @@ public class TimerByHiveCacheFileThread implements Runnable{
 		String immuTableKeyName="";
 		DataFile dataFile = null;
 		try{
-			System.out.println("---->>>size :: "+GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
 			for(Entry<String, Long> cacheTimerMap:GlobalConfInfo.lastDataWriteTimerByParquetMap.entrySet()) {
 				immuTableKeyName = cacheTimerMap.getKey();
 				if((System.currentTimeMillis()-cacheTimerMap.getValue())/1000 > Constant.hiveDiffTimers) {

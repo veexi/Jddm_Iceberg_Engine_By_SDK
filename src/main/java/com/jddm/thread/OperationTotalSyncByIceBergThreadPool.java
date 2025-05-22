@@ -79,7 +79,6 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread{
 
 					recvPackageObj = GlobalSetConfInfo.icebergEngineOperationQueue.take();
 					//recvPackageObj = GlobalConfInfoSet.jddm
-					System.out.println("------>>>recvFlag:: "+(recvPackageObj instanceof PackageReturnRowVo));
 					if(recvPackageObj instanceof PackageReturnVo) {
 						
 						packageReturnVo = (PackageReturnVo)recvPackageObj;
@@ -88,7 +87,6 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread{
 						columnsNum=Integer.parseInt(packageReturnVo.getColsCount());
 						schemaKeyByParquet = packageReturnVo.getOwnerName().toLowerCase()+"."+packageReturnVo.getTableName().toLowerCase();
 						schemaKeyByParquetThreadID = packageReturnVo.getOwnerName().toLowerCase()+"."+packageReturnVo.getTableName().toLowerCase()+"."+threadID;
-						System.out.println("===>package:: "+schemaKeyByParquetThreadID);
 						if(!GlobalConfInfo.engineAtomicByTableKeyMap.containsKey(schemaKeyByParquetThreadID)) {
 							GlobalConfInfo.engineAtomicByTableKeyMap.put(schemaKeyByParquetThreadID,new AtomicInteger(1));
 						}else {
