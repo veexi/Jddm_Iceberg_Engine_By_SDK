@@ -75,6 +75,7 @@ public class TimerByHiveCacheFileThread implements Runnable{
 		String immuTableKeyName="";
 		DataFile dataFile = null;
 		try{
+			System.out.println("----->>>>GlobalConfInfo.lastDataWriteTimerByParquetMap.size:: "+GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
 			for(Entry<String, Long> cacheTimerMap:GlobalConfInfo.lastDataWriteTimerByParquetMap.entrySet()) {
 				immuTableKeyName = cacheTimerMap.getKey();
 				if((System.currentTimeMillis()-cacheTimerMap.getValue())/1000 > Constant.hiveDiffTimers) {
@@ -153,14 +154,12 @@ public class TimerByHiveCacheFileThread implements Runnable{
 					// 3. 将文件写入table中
 					dataFile = dataWriter.toDataFile();
 					GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).newAppend().appendFile(dataFile).commit();
-/*
 						log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count::"+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" ... ");
-*/
-						log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count:: [I]="+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" [D]="+GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build().size()+" CompletSize ::["+GlobalSetConfInfo.IceBergOperationCompleteMap.size()+"] ... ");
+//						log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count:: [I]="+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" [D]="+GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build().size()+" CompletSize ::["+GlobalSetConfInfo.IceBergOperationCompleteMap.size()+"] ... ");
 
 						GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(immuTableKeyName);
 					GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.remove(immuTableKeyName);
-						GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName);
+//						GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName);
 						GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(cacheTimerMap.getKey());
 					
 				}

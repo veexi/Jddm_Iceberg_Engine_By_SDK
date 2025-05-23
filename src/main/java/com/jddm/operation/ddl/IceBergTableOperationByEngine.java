@@ -65,7 +65,7 @@ public class IceBergTableOperationByEngine {
 		List<TableColumnVo> yloaderColumnList = new ArrayList<TableColumnVo>();
 		
 		if(ConstantPubSet.logForAgentType == 2000){
-	    	log.info(" ICEBerg Schema ::"+tableInfoVo.getOwner()+" TName ::"+tableInfoVo.getTableName()+" tableSpace ::"+tableInfoVo.getTableSpace());
+	    	log.info(" ICEBerg Schema ::"+tableInfoVo.getOwner().toLowerCase()+" TName ::"+tableInfoVo.getTableName().toLowerCase()+" tableSpace ::"+tableInfoVo.getTableSpace());
 	    }
 
 
@@ -177,9 +177,9 @@ public class IceBergTableOperationByEngine {
 		log.info(" JDDM_ICEBERG_HIVE_Engine List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
 	    
 		if(Constant.settingDataBaseName !=null && !Constant.settingDataBaseName.equals("")) {
-			hiveExtTableName = Constant.settingDataBaseName+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner(),tableInfoVo.getTableName());
+			hiveExtTableName = Constant.settingDataBaseName+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
 		}else {
-			hiveExtTableName = tableInfoVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner(),tableInfoVo.getTableName());
+			hiveExtTableName = tableInfoVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
 		}
 		
 		
@@ -392,7 +392,7 @@ public class IceBergTableOperationByEngine {
 			
 			Table iceBergTable;
 			PartitionSpec spec = null;
-			TableIdentifier tableIdentifier = TableIdentifier.of(tableInfoVo.getOwner(),tableInfoVo.getTableName());
+					TableIdentifier tableIdentifier = TableIdentifier.of(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
 			
 			log.info(" ========== JDBC IceBerg DDL_CreateSQL :::"+tableIdentifier.toString());
 			HiveCatalog catalog = new HiveCatalog();

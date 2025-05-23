@@ -29,18 +29,14 @@ public class ReLoaderTableInfoBySqliteDB implements Runnable{
 		try {
 			
 			if(!GlobalConfCommInfo.ddlOperCacheTableKeyMap.isEmpty()) {
-				
-				switch(ConstantPublic.jddmEngineDataType) {
-					case "ICEBREG":
-						GlobalConfInfo.reloadTableVoCalcMap.get(Constant.reloadKeyName).getAndIncrement();
-
+				GlobalConfInfo.reloadTableVoCalcMap.get(Constant.reloadKeyName).getAndIncrement();
 						if(GlobalConfInfo.reloadTableVoCalcMap.get(Constant.reloadKeyName).get()>=3) {
 
 							for(Map.Entry<String, String> reloadTableKeyVo:GlobalConfCommInfo.ddlOperCacheTableKeyMap.entrySet()){
-								log.info("  JddmEngine[Hive&Hdfs]-ICEBERG ReLoading DDL ::"+reloadTableKeyVo.getKey()+" Type ::"+reloadTableKeyVo.getValue());
+								log.info("  JddmEngine[Hive&Hdfs]-ICEBERG ReLoading DDL ::"+reloadTableKeyVo.getKey().toLowerCase()+" Type ::"+reloadTableKeyVo.getValue());
 								sqliteDBOperation = new SQLiteJDBC();
-								tableInfoArr = sqliteDBOperation.query_TableContentObject_ByKey(reloadTableKeyVo.getKey());
-								sourceTableInfoArr = sqliteDBOperation.query_TableContentObject_ByKey(reloadTableKeyVo.getKey()+"_source");
+								tableInfoArr = sqliteDBOperation.query_TableContentObject_ByKey(reloadTableKeyVo.getKey().toLowerCase());
+								sourceTableInfoArr = sqliteDBOperation.query_TableContentObject_ByKey(reloadTableKeyVo.getKey().toLowerCase()+"_source");
 								if(tableInfoArr !=null && tableInfoArr.length>3) {
 									tableCacheInfo = new TableAllCacheInfo();
 									//加载yloader字典
@@ -48,37 +44,37 @@ public class ReLoaderTableInfoBySqliteDB implements Runnable{
 
 									TableInfoVo sourceTableInfoDBVo =tableCacheInfo.serializableTableVo_ToByteArray(sourceTableInfoArr);
 
-									GlobalConfCommInfo.cacheSourceTableInfoMap.put(reloadTableKeyVo.getKey(), sourceTableInfoDBVo);
+									GlobalConfCommInfo.cacheSourceTableInfoMap.put(reloadTableKeyVo.getKey().toLowerCase(), sourceTableInfoDBVo);
 
 									log.info("  [ICEBERG] Query Yloader Table ColumnList Size ::"+tableInfoDBVo.getColumnList().size());
-									tableCacheInfo.mergeSourceAndYloaderDictionary(reloadTableKeyVo.getKey(),tableInfoDBVo);
+									tableCacheInfo.mergeSourceAndYloaderDictionary(reloadTableKeyVo.getKey().toLowerCase(),tableInfoDBVo);
 
 									//删除原表缓存；
-									GlobalConfCommInfo.cacheSourceTableInfoMap.remove(reloadTableKeyVo.getKey());
+									GlobalConfCommInfo.cacheSourceTableInfoMap.remove(reloadTableKeyVo.getKey().toLowerCase());
 
 									for(TableColumnVo colSyncVo:(List<TableColumnVo>)tableInfoDBVo.getColumnList()) {
 
 										if(colSyncVo.getSourceType()!=null && colSyncVo.getcFlag() !=null) {
-											log.info(String.format(" JDDM(Hive&Hdfs)Engine reLoading DDL S.T::%20s --> %10s Type ::%3d SType ::%8s CFlag:%s", reloadTableKeyVo.getKey(),colSyncVo.getColumnName(),colSyncVo.getColumnType(),ConversionUtil.printHexString(colSyncVo.getSourceType()),ConversionUtil.printHexString(colSyncVo.getcFlag())));
+											log.info(String.format(" JDDM(Hive&Hdfs)Engine reLoading DDL S.T::%20s --> %10s Type ::%3d SType ::%8s CFlag:%s", reloadTableKeyVo.getKey().toLowerCase(),colSyncVo.getColumnName(),colSyncVo.getColumnType(),ConversionUtil.printHexString(colSyncVo.getSourceType()),ConversionUtil.printHexString(colSyncVo.getcFlag())));
 										}else {
-											log.info(String.format(" JDDM(Hive&Hdfs)Engine reLoading DDL S.T::%20s --> %10s Type ::%3d SType ::%8s CFlag:%s", reloadTableKeyVo.getKey(),colSyncVo.getColumnName(),colSyncVo.getColumnType(),colSyncVo.getSourceType(),colSyncVo.getcFlag()));
+											log.info(String.format(" JDDM(Hive&Hdfs)Engine reLoading DDL S.T::%20s --> %10s Type ::%3d SType ::%8s CFlag:%s", reloadTableKeyVo.getKey().toLowerCase(),colSyncVo.getColumnName(),colSyncVo.getColumnType(),colSyncVo.getSourceType(),colSyncVo.getcFlag()));
 										}
 
 									}
 									log.info(" =================================================> [ICEBERG] End   ReLoading JddmEngine Table Partition Session .... ");
 
 									String thisOdpsKeyName=tableInfoDBVo.getOwner().toLowerCase()+"."+tableInfoDBVo.getTableName().toLowerCase();
-									GlobalConfCommInfo.cacheTableInfoMap.put(reloadTableKeyVo.getKey(), tableInfoDBVo);
+									GlobalConfCommInfo.cacheTableInfoMap.put(reloadTableKeyVo.getKey().toLowerCase(), tableInfoDBVo);
 
 									log.info(" JddmEngine Put "+thisOdpsKeyName+" to JVM MemoryCache ... ... ");
 									log.info(" =================================================> [ICEBERG] Loaded To JddmEngine MemoryCache  Complete !!! ");
 
 									if(Constant.settingDataBaseName !=null && !Constant.settingDataBaseName.equals("")) {
-										GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(reloadTableKeyVo.getKey(), Constant.settingDataBaseName+"."+FileUtils.createTableName_ByJddmEngine(tableInfoDBVo.getOwner(),tableInfoDBVo.getTableName()));
+										GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(reloadTableKeyVo.getKey().toLowerCase(), Constant.settingDataBaseName+"."+FileUtils.createTableName_ByJddmEngine(tableInfoDBVo.getOwner(),tableInfoDBVo.getTableName()));
 									} else {
-										GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(reloadTableKeyVo.getKey(), tableInfoDBVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoDBVo.getOwner(),tableInfoDBVo.getTableName()));
+										GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(reloadTableKeyVo.getKey().toLowerCase(), tableInfoDBVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoDBVo.getOwner(),tableInfoDBVo.getTableName()));
 									}
-									if(!GlobalConfCommInfo.cacheTableInfoMap.get(reloadTableKeyVo.getKey()).getColumnList().isEmpty()){
+									if(!GlobalConfCommInfo.cacheTableInfoMap.get(reloadTableKeyVo.getKey().toLowerCase()).getColumnList().isEmpty()){
 										TableColumnVo tableColumnVo = null;
 										LinkedHashMap<String, String> tableColumnMap = new LinkedHashMap<String, String>();
 										IceBergTableOperationByEngine iceBergTableOperationByEngine =  new IceBergTableOperationByEngine();
@@ -103,17 +99,10 @@ public class ReLoaderTableInfoBySqliteDB implements Runnable{
 
 							for(Map.Entry<String, String> reloadTableKeyVo:GlobalConfCommInfo.ddlOperCacheTableKeyMap.entrySet()) {
 
-								log.info(" Jddm(Hive&Hdfs)Engine Reloaded DDL S.T ---> "+reloadTableKeyVo.getKey()+" CalcNo :::["+GlobalConfInfo.reloadTableVoCalcMap.get(Constant.reloadKeyName).get()+"=3] ...");
+								log.info(" Jddm(Hive&Hdfs)Engine Reloaded DDL S.T ---> "+reloadTableKeyVo.getKey().toLowerCase()+" CalcNo :::["+GlobalConfInfo.reloadTableVoCalcMap.get(Constant.reloadKeyName).get()+"=3] ...");
 							}
 						}
 
-
-						break;
-				default:
-					log.info(" Jddm(Hive&Hdfs)Engine Type ::["+ConstantPublic.jddmEngineDataType+"] , DoNothing ... ...");
-					GlobalConfCommInfo.cacheTableInfoMap.clear();
-					break;
-				}
 				
 			}
 			

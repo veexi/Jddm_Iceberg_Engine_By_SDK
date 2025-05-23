@@ -122,7 +122,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread{
 						
 							GlobalSetConfInfo.IceBergTableGnericCacheMap.put(schemaKeyByParquetThreadID, record);
 							GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.put(schemaKeyByParquetThreadID, immTableBuilder);
-							GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.put(schemaKeyByParquetThreadID, immTableBuilder);
+//							GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.put(schemaKeyByParquetThreadID, immTableBuilder);
 							log.info(" IceBreg Module Init Using Timer ("+(System.currentTimeMillis()-startTimer)+") ...");
 
 						}

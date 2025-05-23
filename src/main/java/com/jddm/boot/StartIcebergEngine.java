@@ -17,12 +17,16 @@ import com.jddm.operation.timer.ReLoaderTableInfoBySqliteDB;
 import com.jddm.operation.timer.TimerByHiveCacheFileThread;
 import com.jddm.thread.OperationTotalSyncByIceBergThreadPool;
 import com.jddm.utils.IcebergValidator;
+import com.publics.cache.TableAllCacheInfo;
 import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
+import com.publics.conf.GlobalConfCommInfo;
 import com.publics.engine.operation.socketSecGeneration.SocketGeneralEngine;
 import com.publics.engine.state.EngineStateInfo;
+import com.publics.operation.jdbcOper.embeddedDB.SQLiteJDBC;
 import com.publics.operation.socket.ExecSQLInfoVo;
 import com.publics.utils.FileUtils;
+import org.apache.commons.beanutils.BeanUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.tools.picocli.CommandLine;
@@ -30,6 +34,7 @@ import org.apache.logging.log4j.core.tools.picocli.CommandLine;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -82,9 +87,6 @@ public class StartIcebergEngine {
                 throw new Exception("Config parameters initialization failed, please check!");
             }
 
-            if (initializeServices()){
-
-            }
             printAsciiVerison(initializeServices());
 
 
@@ -102,17 +104,46 @@ public class StartIcebergEngine {
                             case "SourceTableInfoVo": // } else if(item instanceof SourceTableInfoVo) {
                                 System.out.println(" Source_DDL ::" + ((SourceTableInfoVo) item).getOwner() + "." + ((SourceTableInfoVo) item).getTableName() + " colSize ::" + ((SourceTableInfoVo) item).getColumnList().size());
                                 try {
+                                    TableAllCacheInfo tableCacheInfo = new TableAllCacheInfo();
+                                    SQLiteJDBC sqLiteJDBC= null;
+                                    byte[] content = new byte[0x12];
+                                    String cachekeyName = ((SourceTableInfoVo) item).getOwner().toLowerCase()+"."+((SourceTableInfoVo) item).getTableName().toLowerCase();
+                                    GlobalConfCommInfo.cacheSourceTableInfoMap.put(cachekeyName, toTableInfo((SourceTableInfoVo) item));
+                                    //tableCacheInfo.mergeSourceAndYloaderDictionary(cachekeyName,tableInfoVo);
+//                                    tableCacheInfo.setSourceColumeTypeToYloaderDictionary(cachekeyName, ((TableInfoVo) item));
+                                    //写入到sqlite 嵌入式数据库中
+                                    sqLiteJDBC = new SQLiteJDBC();
+                                    sqLiteJDBC.recordJddmCacheTable_ToSqliteDB(cachekeyName+"_source",((SourceTableInfoVo) item).getObjn()+"",content,tableCacheInfo.serializableTableVo_ToByteArray(toTableInfo((SourceTableInfoVo) item)));
+
                                     System.out.println(" Jddm Engine Plug-in  Source Table DDL schema&table    ::" + ((SourceTableInfoVo) item).getOwner() + "." + ((SourceTableInfoVo) item).getTableName());
                                     System.out.println(" Jddm Engine Plug-in  Source Table DDL ColumnSize   ::" + ((SourceTableInfoVo) item).getColumnList().size());
                                 } catch (Exception e) {
+                                    e.printStackTrace();
 
                                 }
                                 break;
                             case "TableInfoVo": //} else if(item instanceof TableInfoVo) {
                                 System.out.println(" DDL ::" + ((TableInfoVo) item).getOwner() + "." + ((TableInfoVo) item).getTableName() + " colSize ::" + ((TableInfoVo) item).getColumnList().size());
                                 Map<String, String> tableColumnMap = new LinkedHashMap<String, String>();
-                                IceBergTableOperationByEngine iceBergTableOperationByEngine = new IceBergTableOperationByEngine();
-                                iceBergTableOperationByEngine.importHiveTable_IceBerg_Table((TableInfoVo) item, tableColumnMap);
+                                TableAllCacheInfo tableCacheInfo = new TableAllCacheInfo();
+                                SQLiteJDBC sqLiteJDBC= null;
+                                byte[] content = new byte[0x12];
+                                String cachekeyName = ((TableInfoVo) item).getOwner().toLowerCase()+"."+((TableInfoVo) item).getTableName().toLowerCase();
+                                if(GlobalConfCommInfo.cacheSourceTableInfoMap.containsKey(cachekeyName)) {
+                                    //tableCacheInfo.mergeSourceAndYloaderDictionary(cachekeyName,tableInfoVo);
+                                    tableCacheInfo.setSourceColumeTypeToYloaderDictionary(cachekeyName, ((TableInfoVo) item));
+                                    //写入到sqlite 嵌入式数据库中
+                                    sqLiteJDBC = new SQLiteJDBC();
+                                    sqLiteJDBC.recordJddmCacheTable_ToSqliteDB(cachekeyName,((TableInfoVo) item).getObjn()+"",content,tableCacheInfo.serializableTableVo_ToByteArray((TableInfoVo) item));
+
+                                }
+                                GlobalConfCommInfo.cacheSourceTableInfoMap.remove(cachekeyName);
+                                if (!GlobalConfCommInfo.cacheTableInfoMap.containsKey(cachekeyName)){
+                                    IceBergTableOperationByEngine iceBergTableOperationByEngine = new IceBergTableOperationByEngine();
+                                    iceBergTableOperationByEngine.importHiveTable_IceBerg_Table((TableInfoVo) item, tableColumnMap);
+                                }
+                                GlobalConfCommInfo.cacheTableInfoMap.put(cachekeyName, (TableInfoVo) item);
+
                                 break;
                             case "PackageReturnVo":
                                 System.out.println(" DML ::" + ((PackageReturnVo) item).getOwnerName() + "." + ((PackageReturnVo) item).getTableName() + " fileNo ::" + ((PackageReturnVo) item).getFileNo() + " Rows ::" + ((PackageReturnVo) item).getRowsCount());
@@ -158,7 +189,7 @@ public class StartIcebergEngine {
             jddmKillHandler.registerSignal("TERM");
             jddmKillHandler.registerSignal("INT");
 
-            scheduledThreadPool = Executors.newScheduledThreadPool(1);
+            scheduledThreadPool = Executors.newScheduledThreadPool(5);
             TimerByHiveCacheFileThread timerByHiveCacheFileThread = new TimerByHiveCacheFileThread();
             scheduledThreadPool.scheduleAtFixedRate(timerByHiveCacheFileThread, 5, 30, TimeUnit.SECONDS);
 
@@ -264,5 +295,15 @@ public class StartIcebergEngine {
 
     public static void setHiveFilePath(String hiveFilePath) {
         StartIcebergEngine.hiveFilePath = hiveFilePath;
+    }
+    public static TableInfoVo toTableInfo(SourceTableInfoVo src) {
+        TableInfoVo dest = new TableInfoVo();
+        try {
+            // 参数顺序：dest, orig
+            BeanUtils.copyProperties(dest, src);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+        return dest;
     }
 }
