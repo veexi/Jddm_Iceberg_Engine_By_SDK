@@ -5,6 +5,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 
 public class GlobalConfInfo{
+	public static int customJddmEngineErrorFlag=0;
+	private static Object dbOperServiceObj;
 
 	//2023/1/13 3:17 PM; Auth:JH ; 增加缓存加载数据字典的计数Map
 	public static Map<String,AtomicInteger> reloadTableVoCalcMap = new ConcurrentHashMap<String,AtomicInteger>();
@@ -20,9 +22,14 @@ public class GlobalConfInfo{
 	public static void setConf(Configuration conf) {
 		GlobalConfInfo.conf = conf;
 	}
-	
 
 
+	public static Object getDbOperServiceObj() {
+		return dbOperServiceObj;
+	}
 
-	
+	public static void setDbOperServiceObj(Object dbOperServiceObj) {
+		GlobalConfInfo.dbOperServiceObj = dbOperServiceObj;
+	}
+
 }

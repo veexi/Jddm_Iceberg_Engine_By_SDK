@@ -18,6 +18,7 @@ import com.jddm.operation.timer.TimerByHiveCacheFileThread;
 import com.jddm.thread.OperationTotalSyncByIceBergThreadPool;
 import com.jddm.utils.IcebergValidator;
 import com.publics.cache.TableAllCacheInfo;
+import com.publics.common.ConstantFileInfoSet;
 import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
 import com.publics.conf.GlobalConfCommInfo;
@@ -25,6 +26,7 @@ import com.publics.engine.operation.socketSecGeneration.SocketGeneralEngine;
 import com.publics.engine.state.EngineStateInfo;
 import com.publics.operation.jdbcOper.embeddedDB.SQLiteJDBC;
 import com.publics.operation.socket.ExecSQLInfoVo;
+import com.publics.utils.EngineLoadJarPkg;
 import com.publics.utils.FileUtils;
 import org.apache.commons.beanutils.BeanUtils;
 import org.apache.logging.log4j.LogManager;
@@ -35,6 +37,8 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.*;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -45,6 +49,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.jar.Manifest;
+
+import static com.publics.utils.PublicOperationUtils.findAllJarFileList;
 
 /**
  * className: StartIcebergEngine<br>
@@ -68,9 +74,15 @@ public class StartIcebergEngine {
      * @since       （创建时间）: 2025/5/22 16:55
      ***/
     public static void main(String[] args) throws Exception {
-
+        Logger log = LogManager.getLogger(StartIcebergEngine.class);
         Properties properties = new Properties();
         try {
+            String ip="";
+            if(ip.equals("127.0.0.1")){
+                Constant.localHostIpAddress=getThisEngineLocalIp();
+            } else {
+                Constant.localHostIpAddress=ip;
+            }
 
             Properties props = System.getProperties(); //系统属性
             Constant.basicWorkPath = props.getProperty("user.dir");
@@ -88,8 +100,70 @@ public class StartIcebergEngine {
             }
 
             printAsciiVerison(initializeServices());
+            File libJarfile = new File(ConstantSet.baseWorkDir+File.separator+ ConstantFileInfoSet.cacheFileInfoSet.ModuleLibInfo.getPath());
+            List<String> allJarList= new ArrayList<String>();
+            log.info(Constant.JddmEngineTypeInfo+" ###### General Main Engine Begin To Loading Module ... ... ");
+            findAllJarFileList(libJarfile,allJarList);
+            String dataBaseConfXmlConfiger="";
+            String dynamicLoaderJarFileName ="";
+            URL dataSyncUrl = null;
+            URLClassLoader classLoader = null;
 
+            Class<?> syncInitInfoCls = null;
+            for(String jarFileName:allJarList) {
 
+                log.info(Constant.JddmEngineTypeInfo+" Main Engine user.dir ::"+ConstantSet.baseWorkDir+" ipAddress ::"+Constant.localHostIpAddress+" size :"+allJarList.size()+" jarName ::"+jarFileName);
+                switch(jarFileName) {
+
+                    case "jddm.engine.module.databaseOperation.jar":  //缓存数据入库模块
+						/*dataBaseConfXmlConfiger = "config/module/dataBase/applicationContext.xml";
+						GlobalDBConfInfo.setContext(new FileSystemXmlApplicationContext(dataBaseConfXmlConfiger));
+						log.info(" ");
+						log.info(" ##################################################################################################");
+						log.info("  Please wait a moment, Connect to Setting Mysql DataBase ......");
+						MysqlDataBaseOperation mysqlDataBaseOperation = new MysqlDataBaseOperation();
+						mysqlDataBaseOperation.queryMysqlDataBaseBaseInfo();
+						if(mysqlDataBaseOperation.existInDataBaseVerification("dataxone_bigdatas_db")){
+
+							mysqlDataBaseOperation.verificationTableNameExistInMysqlDB("dataxone_bigdatas_db","fl_kafka_topic_send_info");
+							mysqlDataBaseOperation.verificationTableNameExistInMysqlDB("dataxone_bigdatas_db","fl_kafka_partition_send_info");
+							mysqlDataBaseOperation.verificationTableNameExistInMysqlDB("dataxone_bigdatas_db","real_kafka_partition_send_info");
+
+						}
+						log.info(" ##################################################################################################");
+						log.info(" ");*/
+
+                        dynamicLoaderJarFileName = ConstantSet.baseWorkDir+File.separator+"module"+File.separator+"jddm.engine.module.databaseOperation.jar";
+
+                        EngineLoadJarPkg.loadJar(dynamicLoaderJarFileName);
+
+                        log.info(ConstantSet.jddmEngine.MYSQL.getEngineName()+"Loding DataBase Operation jar Path ::"+dynamicLoaderJarFileName);
+                        //从容器中获取Class对象
+                        dataSyncUrl = new File(dynamicLoaderJarFileName).toURI().toURL();
+                        classLoader = new URLClassLoader(new URL[] { dataSyncUrl }, Thread.currentThread().getContextClassLoader());
+
+                        syncInitInfoCls = classLoader.loadClass("com.jddm.engine.database.OperationByJddmDataBase");
+                        if (syncInitInfoCls == null) {
+                            return;
+                        }
+                        log.info(ConstantSet.jddmEngine.MYSQL.getEngineName()+"DataBase Config --------> workDirPath ::"+ConstantSet.baseWorkDir);
+                        //dataBaseConfXmlConfiger = projectRunningPath+File.separator+"config/module/dataBase/applicationContext.xml";
+                        dataBaseConfXmlConfiger = "config/module/dataBase/applicationContext.xml";
+                        log.info(" Jddm Engine[Mysql] DataBase Config --------> workDirPath ::"+dataBaseConfXmlConfiger);
+                        //初始化数据同步配置文件
+                        Method cacheMethod = syncInitInfoCls.getDeclaredMethod("initDataBaseConfig", String.class);
+
+                        cacheMethod.invoke(syncInitInfoCls, dataBaseConfXmlConfiger);
+
+                        Constant.kafkaMonitorToDBType = true;
+
+                        Object beanObj=EngineLoadJarPkg.searchBeanMethod("mysqldbOperationService");//从容器中获取Bean对象，并输出所有定义的方法
+                        GlobalConfInfo.setDbOperServiceObj(beanObj);
+                        log.info(Constant.JddmEngineTypeInfo+"Loding DataBase Operation jar Path ::"+dynamicLoaderJarFileName);
+                        break;
+                }
+
+            }
             properties.setProperty("ServerPort", Constant.socketServerPort);
             properties.setProperty("ThreadPoolSize", Constant.socketThreadPoolSize);
             SocketGeneralEngine engine = SocketGeneralEngine.create("path")
@@ -146,6 +220,27 @@ public class StartIcebergEngine {
 
                                 break;
                             case "PackageReturnVo":
+                                if(!ConstantPublic.jddmEngineStatFlag) {  // 获取 Signal 信号值，如果程序被 kill -9 之外的任意停止命令终止，在返回异常；
+
+                                    switch(Constant.customJddmEngineErrorFlag) {
+
+                                        case 10004:
+                                            log.error(" JddmEngine(Java program) execution Stop Command !!! ");
+                                            //socketReturnVo.setTradeType("kafkaData");
+                                            break;
+                                        case 10001: // hive Engine Exception ->   org.apache.hadoop.hive.ql.metadata.HiveException: Access denied: Unable to move source file /xxxx/xxxx/xxxxx
+                                            log.error(ConstantPublic.jddmEngineError_Msg);
+                                            //socketReturnVo.setTradeType("kafkaData");
+                                            break;
+                                        default:
+                                            log.error(" unKnow Error !!! Please contact system engineer !");
+                                            //socketReturnVo.setTradeType("kafkaData");
+                                            break;
+                                    }
+
+                                }else {
+
+                                }
                                 System.out.println(" DML ::" + ((PackageReturnVo) item).getOwnerName() + "." + ((PackageReturnVo) item).getTableName() + " fileNo ::" + ((PackageReturnVo) item).getFileNo() + " Rows ::" + ((PackageReturnVo) item).getRowsCount());
                                 try {
                                     GlobalSetConfInfo.icebergEngineOperationQueue.put((PackageReturnVo) item);
@@ -305,5 +400,36 @@ public class StartIcebergEngine {
             throw new RuntimeException(e);
         }
         return dest;
+    }
+    public static String getThisEngineLocalIp() {
+        String localip = null;// 本地IP，如果没有配置外网IP则返回它
+        String netip = null;// 外网IP
+        try {
+            Enumeration netInterfaces = NetworkInterface.getNetworkInterfaces();
+            InetAddress ip = null;
+            boolean finded = false;// 是否找到外网IP
+            while (netInterfaces.hasMoreElements() && !finded) {
+                NetworkInterface ni = (NetworkInterface) netInterfaces.nextElement();
+                Enumeration address = ni.getInetAddresses();
+                while (address.hasMoreElements()) {
+                    ip = (InetAddress) address.nextElement();
+                    if (!ip.isSiteLocalAddress() && !ip.isLoopbackAddress() && ip.getHostAddress().indexOf(":") == -1) {// 外网IP
+                        netip = ip.getHostAddress();
+                        finded = true;
+                        break;
+                    } else if (ip.isSiteLocalAddress() && !ip.isLoopbackAddress() && ip.getHostAddress().indexOf(":") == -1) {// 内网IP
+                        localip = ip.getHostAddress();
+                    }
+                }
+            }
+        } catch (SocketException e) {
+            e.printStackTrace();
+        }
+
+        if (netip != null && !"".equals(netip)) {
+            return netip;
+        } else {
+            return localip;
+        }
     }
 }

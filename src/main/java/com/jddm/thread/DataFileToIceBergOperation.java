@@ -110,11 +110,13 @@ public Logger log = LogManager.getLogger(DataFileToIceBergOperation.class);
 //							.addRows(dataWriter.toDataFile())
 							.commit();
 
-//					GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName); // 删除缓存
+					GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName); // 删除缓存
 				} else {
 					// 只追加数据文件（你原来的逻辑）
 					GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName)
-							.newAppend().appendFile(dataWriter.toDataFile()).commit();
+							.newAppend()
+							.appendFile(dataWriter.toDataFile())
+							.commit();
 				}
 
 

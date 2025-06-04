@@ -21,6 +21,8 @@ public class Constant {
 	public static String socketThreadPoolSize="20";
 	public static int LOG_AGENT_LEVEL=1000;
 
+    public static boolean kafkaMonitorToDBType=false;
+	public static String localHostIpAddress="";
 }
 
 

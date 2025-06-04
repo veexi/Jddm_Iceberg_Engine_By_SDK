@@ -4,9 +4,11 @@ import com.jddm.common.Constant;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.OverwriteFiles;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.parquet.GenericParquetWriter;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.parquet.Parquet;
@@ -71,11 +73,11 @@ public class TimerByHiveCacheFileThread implements Runnable{
 		String hivePartitionKeyValue=null;
 		String[] splitArr=null;
 		String tableKeyName="";
-		
+		Set<Object> newIds = null;
 		String immuTableKeyName="";
 		DataFile dataFile = null;
 		try{
-			System.out.println("----->>>>GlobalConfInfo.lastDataWriteTimerByParquetMap.size:: "+GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
+//			System.out.println("----->>>>GlobalConfInfo.lastDataWriteTimerByParquetMap.size:: "+GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
 			for(Entry<String, Long> cacheTimerMap:GlobalConfInfo.lastDataWriteTimerByParquetMap.entrySet()) {
 				immuTableKeyName = cacheTimerMap.getKey();
 				if((System.currentTimeMillis()-cacheTimerMap.getValue())/1000 > Constant.hiveDiffTimers) {
@@ -96,17 +98,23 @@ public class TimerByHiveCacheFileThread implements Runnable{
 					    Parquet.writeData(file)
 					    .schema(GlobalSetConfInfo.IceBergSchemaCahceMap.get(tableKeyName))
 					    .createWriterFunc(GenericParquetWriter::buildWriter)
-					    .overwrite()
+					    .overwrite(true)
 					    .withSpec(PartitionSpec.unpartitioned())
 					    .build();
 
-					
-					try {
+
+
+						try {
 						//log.info("----------------> Timer WriteSize ::"+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(cacheTimerMap.getKey()).build().size());
 					    for (GenericRecord record : GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(cacheTimerMap.getKey()).build()) {
-					    	
-					        dataWriter.write(record);
-					    }
+							newIds = new HashSet<>();
+							String id = record.getField("id") == null
+									? null
+									: record.getField("id").toString();
+							newIds.add(id);
+							dataWriter.write(record);
+
+						}
 					    
 					} finally {
 					    dataWriter.close();
@@ -153,14 +161,13 @@ public class TimerByHiveCacheFileThread implements Runnable{
 						}*/
 					// 3. 将文件写入table中
 					dataFile = dataWriter.toDataFile();
-					GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).newAppend().appendFile(dataFile).commit();
-						log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count::"+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" ... ");
-//						log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count:: [I]="+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" [D]="+GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build().size()+" CompletSize ::["+GlobalSetConfInfo.IceBergOperationCompleteMap.size()+"] ... ");
-
-						GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(immuTableKeyName);
+					GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).newOverwrite().addFile(dataFile).overwriteByRowFilter(Expressions.and(Expressions.equal("id","1"),Expressions.equal("name","2"))).commit();
+					log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count::"+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" ... ");
+//					log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count:: [I]="+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" [D]="+GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build().size()+" CompletSize ::["+GlobalSetConfInfo.IceBergOperationCompleteMap.size()+"] ... ");
+					GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(immuTableKeyName);
 					GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.remove(immuTableKeyName);
-//						GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName);
-						GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(cacheTimerMap.getKey());
+//					GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName);
+					GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(cacheTimerMap.getKey());
 					
 				}
 				}

@@ -1,6 +1,7 @@
 package com.jddm.utils;
 
 import com.dsg.analysis.tableInfo.vo.TableInfoVo;
+import com.jddm.boot.StartIcebergEngine;
 import com.jddm.common.Constant;
 import com.jddm.conf.GlobalSetConfInfo;
 import com.jddm.operation.ddl.IceBergTableOperationByEngine;
@@ -43,7 +44,9 @@ public class IcebergValidator {
         ImmutableList.Builder<GenericRecord> immTableBuilder = null;
         TableIdentifier tableIdentifier = TableIdentifier.of("default",testTableName);
         try {
+
             initCatalog();
+//            catalog.dropTable(TableIdentifier.of("default", "jddm_validation_temp_table"));
             if (!catalog.tableExists(tableIdentifier)){
                 properties.put("engine.hive.enabled", "true");
                 table = createTestTable(tableIdentifier);
@@ -57,11 +60,18 @@ public class IcebergValidator {
             }
             //插入测试数据
             GenericRecord iceBergRecord = GenericRecord.create(testSchema);
-            iceBergRecord.setField("validation_int",1);
-            iceBergRecord.setField("validation_string",version);
-            iceBergRecord.setField("validation_datetime",new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date(System.currentTimeMillis())));
-            iceBergRecord.setField("validation_UUID", uuidToBytes(UUID.randomUUID()));
-
+            iceBergRecord.setField("validation_build_time", StartIcebergEngine.getBuildTimeString());
+            iceBergRecord.setField("validation_version",version);
+            String now = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+                    .format(new Date());
+            iceBergRecord.setField("validation_datetime",now);
+            UUID uuid = UUID.randomUUID();
+            iceBergRecord.setField("validation_uuid",uuid.toString());
+/*            System.out.println("----->>>:"+iceBergRecord.toString());
+            System.out.println("===> validation_build_time:"+StartIcebergEngine.getBuildTimeString());
+            System.out.println("===> validation_version:"+version);
+            System.out.println("===> validation_datetime:"+now);
+            System.out.println("===> validation_uuid:"+uuid.toString());*/
             immTableBuilder = ImmutableList.builder();
             immTableBuilder.add(iceBergRecord);
             immTableBuilder.build();
@@ -110,19 +120,20 @@ public class IcebergValidator {
 
         // 创建测试表
         List<Types.NestedField> iceBergTablefields = new ArrayList<>();
-        nestedField0=Types.NestedField.required(0,"validation_int",Types.IntegerType.get());
+        nestedField0=Types.NestedField.required(1,"validation_build_time",Types.StringType.get());
         iceBergTablefields.add(nestedField0);
-        nestedField1=Types.NestedField.optional(1,"validation_string",Types.StringType.get());
+        nestedField1=Types.NestedField.optional(2,"validation_version",Types.StringType.get());
         iceBergTablefields.add(nestedField1);
-        nestedField2=Types.NestedField.optional(2,"validation_datetime",Types.StringType.get());
+        nestedField2=Types.NestedField.optional(3,"validation_datetime",Types.StringType.get());
         iceBergTablefields.add(nestedField2);
-        nestedField3=Types.NestedField.required(3,"validation_UUID",Types.UUIDType.get());
+        nestedField3=Types.NestedField.optional(4,"validation_uuid",Types.StringType.get());
         iceBergTablefields.add(nestedField3);
 
 
-        Set<Integer> identifierFieldIds = new HashSet<>(Collections.singletonList(0));
+        Set<Integer> identifierFieldIds = new HashSet<>(Collections.singletonList(1));
 
         testSchema = new Schema(iceBergTablefields,identifierFieldIds);
+//        testSchema = new Schema(iceBergTablefields);
         spec = PartitionSpec.builderFor(testSchema).build();
         returnIceTable = catalog.createTable(tableIdentifier, testSchema,spec,properties);
 

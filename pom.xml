@@ -6,7 +6,7 @@
 
     <groupId>com.sc.service</groupId>
     <artifactId>Jddm_Iceberg_Engine_By_SDK</artifactId>
-    <version>1.2-SNAPSHOT</version>
+    <version>1.0.0-RC1</version>
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>

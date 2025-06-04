@@ -440,6 +440,7 @@ public class IceBergTableOperationByEngine {
 		} catch (Exception e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
+
 			socketReturnVo.setReturnFlag(false);
 			socketReturnVo.setTradeType("kafkaTable");
 			socketReturnVo.setErrorMsg(e.getMessage());
