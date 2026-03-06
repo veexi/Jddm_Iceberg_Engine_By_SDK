@@ -6,8 +6,10 @@ import com.jddm.conf.GlobalSetConfInfo;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.OverwriteFiles;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.parquet.GenericParquetWriter;
+import org.apache.iceberg.deletes.EqualityDeleteWriter;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.DataWriter;
 import org.apache.iceberg.io.OutputFile;
@@ -17,6 +19,7 @@ import org.apache.logging.log4j.Logger;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.Map.Entry;
+import java.util.stream.Collectors;
 
 
 public class TimerByHiveCacheFileThread implements Runnable{
@@ -104,62 +107,50 @@ public class TimerByHiveCacheFileThread implements Runnable{
 
 
 
-						try {
-						//log.info("----------------> Timer WriteSize ::"+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(cacheTimerMap.getKey()).build().size());
-					    for (GenericRecord record : GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(cacheTimerMap.getKey()).build()) {
-							newIds = new HashSet<>();
-							String id = record.getField("id") == null
-									? null
-									: record.getField("id").toString();
-							newIds.add(id);
-							dataWriter.write(record);
+// 核心改造：DataFileToIceBergOperation.java (约 81 行附近)
+                        List<GenericRecord> deleteRecords = GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build();
 
-						}
-					    
-					} finally {
-					    dataWriter.close();
-					    
-					}
-						/*List<GenericRecord> deleteRecords = GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build();
+                        if (deleteRecords != null && !deleteRecords.isEmpty()) {
+                            Table iceBergTable = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName);
 
-						if (deleteRecords != null && !deleteRecords.isEmpty()) {
-							// 构建等值删除文件
-							List<String> pkNames = Arrays.asList("id","name");
-							String finalTableKeyName = tableKeyName;
-							List<Integer> pkFieldIds = pkNames.stream()
-									.map(name -> GlobalSetConfInfo.IceBergCacheTableMap.get(finalTableKeyName).schema().findField(name).fieldId())
-									.collect(Collectors.toList());
+                            // 1. 动态获取主键列表
+                            List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
+                            List<Integer> equalityFieldIds;
 
-							OutputFile deleteOut = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName)
-									.io().newOutputFile(GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).location() + "/delete/pk_" + UUID.randomUUID());
+                            if (pkNames != null && !pkNames.isEmpty()) {
+                                // 【情况 A】有主键表：仅提取主键列的 fieldId
+                                equalityFieldIds = pkNames.stream()
+                                        .map(name -> iceBergTable.schema().findField(name).fieldId())
+                                        .collect(Collectors.toList());
+                            } else {
+                                // 【情况 B】无主键表（生产兜底方案）：将该表的所有列作为 Equality 识别条件 (全字段精确删除)
+                                equalityFieldIds = iceBergTable.schema().columns().stream()
+                                        .map(org.apache.iceberg.types.Types.NestedField::fieldId)
+                                        .collect(Collectors.toList());
+                            }
 
-							EqualityDeleteWriter<GenericRecord> deleteWriter = Parquet.writeDeletes(deleteOut)
-									.forTable(GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName))
-									.createWriterFunc(GenericParquetWriter::buildWriter)
-									.equalityFieldIds(pkFieldIds)
-									.buildEqualityWriter();
+                            OutputFile deleteOut = iceBergTable.io().newOutputFile(
+                                    iceBergTable.location() + "/delete/eq_del_" + UUID.randomUUID());
 
-							for (GenericRecord rec : deleteRecords) {
-								deleteWriter.write(rec);
-							}
-							deleteWriter.close();
+                            // 2. 构建通用的 EqualityDeleteWriter
+                            EqualityDeleteWriter<GenericRecord> deleteWriter = Parquet.writeDeletes(deleteOut)
+                                    .forTable(iceBergTable)
+                                    .createWriterFunc(GenericParquetWriter::buildWriter)
+                                    .equalityFieldIds(equalityFieldIds) // 传入动态算出的标识列 IDs
+                                    .buildEqualityWriter();
 
-							DeleteFile deleteFile = deleteWriter.result().deleteFiles().get(0);
+                            // 3. 写入删除记录 (对于无主键表，deleteRecord 里必须包含所有列的完整旧值)
+                            for (GenericRecord rec : deleteRecords) {
+                                deleteWriter.write(rec);
+                            }
+                            deleteWriter.close();
 
-							// 写数据 + 删除一起提交
-							GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName)
-									.newRowDelta()
-									.addDeletes(deleteFile)
-									.addRows(dataWriter.toDataFile())
-									.commit();
-
-//					GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName); // 删除缓存
-						} else {
-							// 只追加数据文件（你原来的逻辑）
-							GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName)
-									.newAppend().appendFile(dataWriter.toDataFile()).commit();
-						}*/
-					// 3. 将文件写入table中
+                            // 4. 与数据插入文件一并 Commit
+                            iceBergTable.newRowDelta()
+                                    .addDeletes(deleteWriter.result().deleteFiles().get(0))
+                                    .addRows(dataWriter.toDataFile()) // 兼容有新增数据的情况
+                                    .commit();
+                        }
 					dataFile = dataWriter.toDataFile();
 					GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).newOverwrite().addFile(dataFile).overwriteByRowFilter(Expressions.and(Expressions.equal("id","1"),Expressions.equal("name","2"))).commit();
 					log.info(" TimerBatch =====>>> "+"ThreadID Key ::"+cacheTimerMap.getKey()+" File ::"+filepath+" Count::"+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size()+" ... ");

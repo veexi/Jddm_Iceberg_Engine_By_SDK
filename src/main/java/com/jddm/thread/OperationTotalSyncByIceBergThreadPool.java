@@ -1,557 +1,499 @@
 package com.jddm.thread;
 
 import com.dsg.analysis.utils.ConversionUtil;
-import com.dsg.analysis.vo.PackageReturnRowVo;
 import com.dsg.analysis.vo.PackageReturnVo;
 import com.dsg.analysis.vo.Udb_BcolumnVo;
 import com.jddm.common.Constant;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
+import com.jddm.vo.RowOperation;
+import com.jddm.operation.IceBergBatchOperationHandler;
 import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
 import com.publics.conf.GlobalConfCommInfo;
 import org.apache.iceberg.data.GenericRecord;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
-
-/*** *** ***
- * @projectName（项目名称）:  jddmGeneralDataEngine.jar
- * @package（包）: com.jddm.engine.thread
- * @className（类名称）: OperationTotalSyncByIceBergThreadPool ; @classType : Runnable Class
- * @description（类描述）:  Business processing class of JDDM sourceDB data engine | Jddm Hive 引擎 IceBerg 业务处理类
- * @author（创建人）: JH 
- * @createDate（创建时间）: datetime  
- * @updateUser（修改人）: JH 
- * @updateDate（修改时间）: 2023/06/29  AM 0:50
- * @updateRemark（修改备注）: Added annotation of this method| 增加该方法的注解。
- * @version（版本）: v1.0.0.0
+/**
+ * IceBerg engine worker: processes CDC packets, builds RowOperation list,
+ * appends to IceBergSchemaImmuTableOpsMap. cflag & 1 == 1 -> before image, else -> after.
+ * Trajectory mode: all I/U/D -> insert. Transaction mode: I->insert, U->update, D->delete.
  */
-public class OperationTotalSyncByIceBergThreadPool extends Thread{
-
-//	private Logger log = LogManager.getLogger(this.getClass());
-	public Logger log = LogManager.getLogger(OperationTotalSyncByIceBergThreadPool.class);
-	
-	private Lock threadlock = new ReentrantLock();
-	public OperationTotalSyncByIceBergThreadPool() {
-		
-	}
-
-	@Override
-	public void run() {
-		// TODO Auto-generated method stub
-		//super.run();
-		Object recvPackageObj=null;
-		PackageReturnVo packageReturnVo = null;
-		
-		long startTimer=0L;
-		String schemaKeyByParquet="";
-		String schemaKeyByParquetThreadID="";
-		String jddmEngineWriteFileName="";
-		int rowsNum=0;
-		Map<String, Udb_BcolumnVo> rowUdbColumnMap = new HashMap<String, Udb_BcolumnVo>();
-		int columnsNum=0;
-		//Group group = null;
-		//ParquetWriter<Group> parQuetwriter = null;
-		//GroupFactory factory = null;
-		String jddmEngineWriteAllFileInfo="";
-		long threadID = Thread.currentThread().getId();
-		
-		ImmutableList.Builder<GenericRecord> immTableBuilder = null;
-		GlobalConfInfo.txtFileNoSpliMap.put(threadID, new AtomicInteger(0));
-		String colNameByNumberKey="";
-		
-		while(true){
-			
-			try {
-
-				
-				if(ConstantPublic.jddmEngineStatFlag){
-
-					recvPackageObj = GlobalSetConfInfo.icebergEngineOperationQueue.take();
-					//recvPackageObj = GlobalConfInfoSet.jddm
-					if(recvPackageObj instanceof PackageReturnVo) {
-						
-						packageReturnVo = (PackageReturnVo)recvPackageObj;
-						rowUdbColumnMap=packageReturnVo.getRowUdbColumnMap();
-						rowsNum= Integer.parseInt(packageReturnVo.getRowsCount());
-						columnsNum=Integer.parseInt(packageReturnVo.getColsCount());
-						schemaKeyByParquet = packageReturnVo.getOwnerName().toLowerCase()+"."+packageReturnVo.getTableName().toLowerCase();
-						schemaKeyByParquetThreadID = packageReturnVo.getOwnerName().toLowerCase()+"."+packageReturnVo.getTableName().toLowerCase()+"."+threadID;
-						if(!GlobalConfInfo.engineAtomicByTableKeyMap.containsKey(schemaKeyByParquetThreadID)) {
-							GlobalConfInfo.engineAtomicByTableKeyMap.put(schemaKeyByParquetThreadID,new AtomicInteger(1));
-						}else {
-							GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID).getAndIncrement();
-						}
-						
-						//GlobalConfCommInfo.parallelOperCounterMap.get(packageReturnRowVo.getThisThreadID()).getAndDecrement();
-
-						if(!GlobalSetConfInfo.IceBergTableGnericCacheMap.containsKey(schemaKeyByParquetThreadID)) {
-						
-							startTimer = System.currentTimeMillis();
-							
-							// 1. 构建记录
-							GenericRecord record = null;
-							if (GlobalSetConfInfo.IceBergSchemaCahceMap.isEmpty() || GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet)==null){
-									GlobalConfCommInfo.ddlOperCacheTableKeyMap.put(schemaKeyByParquet,schemaKeyByParquet);
-									while (true){
-										if (GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet)!=null){
-											record = GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-											break;
-										}
-
-									}
-
-							}else if (GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet)!=null) {
-								record = GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-
-							}else {
-								throw new NullPointerException();
-							}
-
-							immTableBuilder = ImmutableList.builder();
-						
-							GlobalSetConfInfo.IceBergTableGnericCacheMap.put(schemaKeyByParquetThreadID, record);
-							GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.put(schemaKeyByParquetThreadID, immTableBuilder);
-//							GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.put(schemaKeyByParquetThreadID, immTableBuilder);
-							log.info(" IceBreg Module Init Using Timer ("+(System.currentTimeMillis()-startTimer)+") ...");
-
-						}
-						
-						/*** *** 
-						builder.add(ImmutableMap.of("id", 1, "name", "chen", "birth", "2020-03-08"));
-						builder.add(ImmutableMap.of("id", 2, "name", "yuan", "birth", "2021-03-09"));
-						builder.add(ImmutableMap.of("id", 3, "name", "jie", "birth", "2023-03-10"));
-						builder.add(ImmutableMap.of("id", 4, "name", "ma", "birth", "2023-03-11"));
-						***/
-						
-						Udb_BcolumnVo columnInfo = null;
-						// 1. 构建记录
-
-						for(int rowNo=0;rowNo < rowsNum;rowNo++) {
-							GenericRecord iceBergRecord = GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-							GenericRecord deleteRecord = GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-							for (int colNo = 0; colNo < columnsNum; colNo++) {
-
-								columnInfo = (Udb_BcolumnVo) rowUdbColumnMap.get(rowNo + "-" + colNo);
-								colNameByNumberKey = schemaKeyByParquet + "." + columnInfo.getColumnName().toLowerCase();
-								switch (packageReturnVo.getOperationType().toUpperCase()) {
-									case "I":
-//									System.out.println("----columnName: "+columnInfo.getColumnName()+" colValue: "+columnInfo.getColumnValue()+" ColType: "+columnInfo.getColTypeArr()[1]);
-										if (GlobalConfCommInfo.jddmEngineTypeByYloaderColMap.containsKey(colNameByNumberKey)) {
-											if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-												//group.add(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-												iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-											}
-										} else {
-//										System.out.println("----columnName: "+columnInfo.getColumnName()+" colValue: "+columnInfo.getColumnValue()+" ColType: "+columnInfo.getColTypeArr()[1]);
-											switch (columnInfo.getColTypeArr()[1]) {
-												case 0x02:
-													if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
-
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), null);
-
-													} else {
-
-														if (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.containsKey(colNameByNumberKey)) {
-//														log.info("--date_pro[ColumnType.Number]-- >> "+columnInfo.getColumnName() +" Value :: " +columnInfo.getColumnValue() + " Prosicon :: "+GlobalSetConfInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey));
-
-
-															switch (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey)) {
-
-																case 1000: //NUMBER
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-																case 1100: //NUMBER(*, 0)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-																case 1200: //NUMBER(%d)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-																case 3000: //NUMBER(%d,%d)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-																	break;
-																case 3100: //FLOAT(%d) |DOUBLE(%d)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-															}
-														/*switch(GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey)) {
-
-															case 1000: //NUMBER
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(18,RoundingMode.HALF_UP));
-																break;
-															case 1100: //NUMBER(*, 0)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(0,RoundingMode.HALF_UP));
-																break;
-															case 1200: //NUMBER(%d)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(0,RoundingMode.HALF_UP));
-																break;
-															case 3000: //NUMBER(%d,%d)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(GlobalSetConfInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey),RoundingMode.HALF_UP));
-																break;
-															case 3100: //FLOAT(%d) |DOUBLE(%d)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(0,RoundingMode.HALF_UP));
-																break;show
-														}*/
-
-														}
-													}
-
-													break;
-											/*case 0x12: //0x0c ---> date (2012-12-12 12:12:12)
-												if (columnInfo.getColumnValue()==null||columnInfo.getColumnValue().equals("")){
-													iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), null);
-													break;
-												}else {
-													DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-													iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(),LocalDateTime.parse(columnInfo.getColumnValue(), formatter));
-													break;
-												}*/
-												case -75: //0xb5 --->TIMESTAMP 2012-12-12 12:12:12.123456789 +时区
-												case -76: //0xb4 --->TIMESTAMP 2012-12-12 12:12:12.123456789
-													if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), null);
-														break;
-													} else {
-														DateTimeFormatter timestampWithZoneFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), LocalDateTime.parse(columnInfo.getColumnValue(), timestampWithZoneFormatter));
-														break;
-													}
-												case 0x64:  //int:100 ; Binary_Float
-												case 0x65:  //int:101 ; Binary_Double
-													if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-														//group.add(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-													}
-													//log.info(" group.add("+columnInfo.getColumnName().toLowerCase()+","+columnInfo.getColumnValue()+") double --> ::"+ConversionUtil.bytesToHexString(columnInfo.getColTypeArr()));
-													break;
-												case 0x71:
-
-													if (GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.containsKey(colNameByNumberKey)) {
-														if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-
-
-															//log.info(columnInfo.getColumnName()+" ---> "+columnInfo.getColumnValue()+"  "+ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue()).length);
-
-															//ByteBuffer setbyteBuffer = ByteBuffer.allocate(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue()).length);
-															//setbyteBuffer.put(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue()));
-															//setbyteBuffer.flip();
-															//iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), setbyteBuffer);
-															iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-														}
-													} else {
-														if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-															//group.add(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-															iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new String(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue())));
-														}
-													}
-
-													break;
-												default:
-													if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-														//group.add(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-
-//											log.info(packageReturnRowVo.getOperationType()+" ---> "+columnInfo.getCflag()+" record.add("+columnInfo.getColumnName().toLowerCase()+",[Bytes[] :"+ ConversionUtil.bytesToHexString(columnInfo.getColumnValue().getBytes()) +"]) TypeArr --> ::"+ConversionUtil.bytesToHexString(columnInfo.getColTypeArr())+" "+GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(schemaKeyByParquet+"."+columnInfo.getColumnName().toLowerCase()));
-
-
-													}
-													//log.info(" group.add("+columnInfo.getColumnName().toLowerCase()+","+columnInfo.getColumnValue()+") binary --> ::"+ConversionUtil.bytesToHexString(columnInfo.getColTypeArr()));
-													break;
-											}
-										}
-										break;
-/*								case "D":
-//									Parquet.WriteBuilder writeBuilder = GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet);
-									*//*Snapshot newSnapshotId = GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet)
-											.newScan()
-											.filter(Expressions.notEqual("column_name", "value_to_delete"))
-											.snapshot();*//*
-									System.out.println("################DELETE");
-									if(GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID).get() % Constant.writeCountNoToHiveFile == 0) {
-
-										Expression deleteCondition = Expressions.equal("id", "1");
-									*//*DeleteFiles deleteFiles = GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet).newDelete();
-									deleteFiles.deleteFromRowFilter(deleteCondition);
-									deleteFiles.commit();*//*
-
-										System.out.println("############Table:: " + GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet));
-										Transaction t = GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet).newTransaction();
-										t.newDelete().deleteFromRowFilter(deleteCondition).commit();
-
-									}
-									break;*/
-									case "D":
-										if ((columnInfo.getCflag() & 8) > 0) {
-											System.out.println("---------->>>Del_Col: " + columnInfo.getColumnName() + " ->Val: " + columnInfo.getColumnValue() + " cflag: " + columnInfo.getCflag());
-											deleteRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-										}
-										break;
-
-									default:
-										if (GlobalConfCommInfo.jddmEngineTypeByYloaderColMap.containsKey(colNameByNumberKey)) {
-											if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-												//group.add(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-												iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-											}
-										} else {
-//										System.out.println("----columnName: "+columnInfo.getColumnName()+" colValue: "+columnInfo.getColumnValue()+" ColType: "+columnInfo.getColTypeArr()[1]);
-											switch (columnInfo.getColTypeArr()[1]) {
-												case (byte) 0x189:
-													break;
-												case 0x02:
-													if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
-
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), null);
-
-													} else {
-
-														if (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.containsKey(colNameByNumberKey)) {
-															switch (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey)) {
-
-																case 1000: //NUMBER
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-																case 1100: //NUMBER(*, 0)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-																case 1200: //NUMBER(%d)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-																case 3000: //NUMBER(%d,%d)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-																	break;
-																case 3100: //FLOAT(%d) |DOUBLE(%d)
-																	iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-																	break;
-															}
-/*														switch(GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey)) {
-
-															case 1000: //NUMBER
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(18,RoundingMode.HALF_UP));
-																break;
-															case 1100: //NUMBER(*, 0)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(0,RoundingMode.HALF_UP));
-																break;
-															case 1200: //NUMBER(%d)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(0,RoundingMode.HALF_UP));
-																break;
-															case 3000: //NUMBER(%d,%d)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(GlobalSetConfInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey),RoundingMode.HALF_UP));
-																break;
-															case 3100: //FLOAT(%d) |DOUBLE(%d)
-																iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new BigDecimal(columnInfo.getColumnValue()).setScale(0,RoundingMode.HALF_UP));
-																break;
-														}*/
-
-														}
-													}
-
-													break;
-												case -75: //0xb5 --->TIMESTAMP 2012-12-12 12:12:12.123456789 +时区
-												case -76: //0xb4 --->TIMESTAMP 2012-12-12 12:12:12.123456789
-													if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), null);
-														break;
-													} else {
-														DateTimeFormatter timestampWithZoneFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), LocalDateTime.parse(columnInfo.getColumnValue(), timestampWithZoneFormatter));
-														break;
-													}
-                                            /*case 0x12: //0x0c ---> date (2012-12-12 12:12:12)
-												if (columnInfo.getColumnValue()==null||columnInfo.getColumnValue().equals("")){
-													iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), null);
-													break;
-												}else {
-													DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-													iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(),LocalDateTime.parse(columnInfo.getColumnValue(), formatter));
-													break;
-												}*/
-
-												case 0x64:  //int:100 ; Binary_Float
-												case 0x65:  //int:101 ; Binary_Double
-													if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-														//group.add(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-													}
-													//log.info(" group.add("+columnInfo.getColumnName().toLowerCase()+","+columnInfo.getColumnValue()+") double --> ::"+ConversionUtil.bytesToHexString(columnInfo.getColTypeArr()));
-													break;
-												case 0x70:
-												case 0x71:
-
-													if (GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.containsKey(colNameByNumberKey)) {
-														if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-
-
-															//log.info(columnInfo.getColumnName()+" ---> "+columnInfo.getColumnValue()+"  "+ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue()).length);
-
-															//ByteBuffer setbyteBuffer = ByteBuffer.allocate(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue()).length);
-															//setbyteBuffer.put(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue()));
-															//setbyteBuffer.flip();
-															//iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), setbyteBuffer);
-															iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-														}
-													} else {
-														if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-															//group.add(columnInfo.getColumnName().toLowerCase(), Double.parseDouble(columnInfo.getColumnValue()));
-															iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), new String(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue())));
-														}
-													}
-													break;
-
-												default:
-													if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-														//group.add(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-														iceBergRecord.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-
-//											log.info(packageReturnRowVo.getOperationType()+" ---> "+columnInfo.getCflag()+" record.add("+columnInfo.getColumnName().toLowerCase()+",[Bytes[] :"+ ConversionUtil.bytesToHexString(columnInfo.getColumnValue().getBytes()) +"]) TypeArr --> ::"+ConversionUtil.bytesToHexString(columnInfo.getColTypeArr())+" "+GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(schemaKeyByParquet+"."+columnInfo.getColumnName().toLowerCase()));
-
-
-													}
-													//log.info(" group.add("+columnInfo.getColumnName().toLowerCase()+","+columnInfo.getColumnValue()+") binary --> ::"+ConversionUtil.bytesToHexString(columnInfo.getColTypeArr()));
-													break;
-											}
-										}
-										break;
-
-								}
-
-								if (ConstantPubSet.logForAgentType == 2000) {
-
-
-//								log.info(packageReturnRowVo.getOperationType()+" -> "+columnInfo.getCflag()+" record.add("+columnInfo.getColumnName().toLowerCase()+",["+columnInfo.getColumnValue()+"]) TypeArr --> ::"+ConversionUtil.bytesToHexString(columnInfo.getColTypeArr())+" "+GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(schemaKeyByParquet+"."+columnInfo.getColumnName().toLowerCase()));
-								}
-
-
-							}
-
-							//log.info(" ");
-
-							if (GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(schemaKeyByParquetThreadID) != null) {
-
-								GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(schemaKeyByParquetThreadID).add(iceBergRecord);
-							} else {
-//								log.info("############原子计数器:"+GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID)+" 统计数量:"+Constant.writeCountNoToHiveFile);
-								throw new NullPointerException();
-
-							}
-/*						if (GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(schemaKeyByParquetThreadID)!=null){
-
-							GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(schemaKeyByParquetThreadID).add(deleteRecord);
-						}else{
-//								log.info("############原子计数器:"+GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID)+" 统计数量:"+Constant.writeCountNoToHiveFile);
-							throw new NullPointerException();
-
-						}*/
-							iceBergRecord = null;
-						}
-						while (true){
-							if (GlobalSetConfInfo.IceBergCacheTableMap.containsKey(schemaKeyByParquet)){
-								break;
-							}
-							try {
-								Thread.sleep(1000); // 休眠1秒，防止占用过高cpu
-							} catch (InterruptedException e) {
-								e.printStackTrace();
-							}
-						}
-
-
-						GlobalConfInfo.lastDataWriteTimerByParquetMap.put(schemaKeyByParquetThreadID, System.currentTimeMillis());
-
-						if(GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID).get() % Constant.writeCountNoToHiveFile == 0) {
-							GlobalConfInfo.lastDataWriteTimerByParquetMap.put(schemaKeyByParquetThreadID, System.currentTimeMillis());
-								log.info(" threadID ::"+Thread.currentThread().getId()+"  --->"+packageReturnVo.getOwnerName()+" tableName ::"+packageReturnVo.getTableName()
-									+" columnSize ::"+packageReturnVo.getRowsCount()+" nowCount ::"+GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID).get()+" File::"+GlobalSetConfInfo.IceBergTableCacheFileMap.get(schemaKeyByParquetThreadID));
-							
-								DataFileToIceBergOperation dataFileToIceBergOperation = new DataFileToIceBergOperation();
-								
-								dataFileToIceBergOperation.setSchemaKeyByParquet(schemaKeyByParquet);
-								dataFileToIceBergOperation.setSchemaKeyByParquetThreadID(schemaKeyByParquetThreadID);
-								dataFileToIceBergOperation.run();
-								
-								
-								while(true) {
-									
-									for(Map.Entry<String, Boolean> completeMap:GlobalSetConfInfo.IceBergOperationCompleteMap.entrySet()) {
-										
-										log.info("  --------> "+completeMap.getKey()+" value ::"+completeMap.getValue()+" ["+GlobalSetConfInfo.IceBergOperationBeginMap.size()+"="+GlobalSetConfInfo.IceBergOperationCompleteMap.size()+"]");
-									}
-									
-									
-									if(GlobalSetConfInfo.IceBergOperationBeginMap.size()==GlobalSetConfInfo.IceBergOperationCompleteMap.size()) {
-										
-										Constant.writeToIceBergDBFlag = true;
-										GlobalSetConfInfo.IceBergOperationCompleteMap.clear();
-										GlobalSetConfInfo.IceBergOperationBeginMap.clear();
-										break;
-									}else {
-										Thread.sleep(1000);
-									}
-								}
-								
-								log.info(" JddmForIceBerg Batch Operation Complete ... ... ");
-								
-							  /***
-								GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(schemaKeyByParquetThreadID).build();
-								
-								//String filepath = GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet).location() + "/" + UUID.randomUUID().toString();
-								
-								GlobalSetConfInfo.IceBergTableCacheFileMap.putIfAbsent(schemaKeyByParquetThreadID, GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet).location() + "/" + UUID.randomUUID().toString());
-								
-		OutputFile file = GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet).io().newOutputFile(GlobalSetConfInfo.IceBergTableCacheFileMap.get(schemaKeyByParquetThreadID));
-								DataWriter<GenericRecord> dataWriter =
-								    Parquet.writeData(file)
-								    .schema(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet))
-								    .createWriterFunc(GenericParquetWriter::buildWriter)
-								    .overwrite()
-								    .withSpec(PartitionSpec.unpartitioned())
-								    .build();
-	
-								DataFile dataFile = null;
-								try {
-								    for (GenericRecord record : GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(schemaKeyByParquetThreadID).build()) {
-								        dataWriter.write(record);
-								    }
-								    
-								} finally {
-								    dataWriter.close();
-								}
-								
-								 // 3. 将文件写入table中
-								dataFile = dataWriter.toDataFile();
-								GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet).newAppend().appendFile(dataFile).commit();
-								
-								
-								GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(schemaKeyByParquetThreadID);
-	
-								immTableBuilder = null;
-							    dataFile = null;
-							    
-							    ***/
-							
-						}
-					}
-				}
-
-
-			}catch(Exception ex) {
-				ex.printStackTrace();
-				log.info(" Exception threadID ::"+Thread.currentThread().getId());
-				break;
-			}
-			
-		}
-	}
-
+public class OperationTotalSyncByIceBergThreadPool extends Thread {
+
+    public Logger log = LogManager.getLogger(OperationTotalSyncByIceBergThreadPool.class);
+
+    private Lock threadlock = new ReentrantLock();
+
+    @Override
+    public void run() {
+        Object recvPackageObj;
+        PackageReturnVo packageReturnVo;
+
+        long startTimer = 0L;
+        String schemaKeyByParquet = "";
+        String schemaKeyByParquetThreadID = "";
+        int rowsNum = 0;
+        Map<String, Udb_BcolumnVo> rowUdbColumnMap = new HashMap<>();
+        int columnsNum = 0;
+        long threadID = Thread.currentThread().getId();
+        String colNameByNumberKey = "";
+
+        GlobalConfInfo.txtFileNoSpliMap.put(threadID, new AtomicInteger(0));
+
+        while (true) {
+            try {
+                if (!ConstantPublic.jddmEngineStatFlag) {
+                    continue;
+                }
+
+                recvPackageObj = GlobalSetConfInfo.icebergEngineOperationQueue.take();
+                if (!(recvPackageObj instanceof PackageReturnVo)) {
+                    continue;
+                }
+
+                packageReturnVo   = (PackageReturnVo) recvPackageObj;
+                long pktSeq      = GlobalConfInfo.icebergEngineOperationSeq.getAndIncrement();
+                rowUdbColumnMap   = packageReturnVo.getRowUdbColumnMap();
+                rowsNum           = Integer.parseInt(packageReturnVo.getRowsCount());
+                columnsNum        = Integer.parseInt(packageReturnVo.getColsCount());
+                schemaKeyByParquet = packageReturnVo.getOwnerName().toLowerCase()
+                        + "." + packageReturnVo.getTableName().toLowerCase();
+                schemaKeyByParquetThreadID = schemaKeyByParquet + "." + threadID;
+
+                // DEBUG 模式：逐列打印原始 CDC 数据
+                if (Constant.debugLogEnabled) {
+                    log.info("[IceBergPool] ========== CDC Packet Info ==========");
+                    log.info("[IceBergPool] pktSeq={} table={} opType={} rows={} cols={}",
+                            pktSeq, schemaKeyByParquet, packageReturnVo.getOperationType(), rowsNum, columnsNum);
+                    for (Map.Entry<String, Udb_BcolumnVo> entry : rowUdbColumnMap.entrySet()) {
+                        Udb_BcolumnVo col = entry.getValue();
+                        log.info("[IceBergPool] colData: key={} | name={} | value={} | cflag={}",
+                                entry.getKey(), col.getColumnName(), col.getColumnValue(), col.getCflag());
+                    }
+                    log.info("[IceBergPool] ========== End Packet Info ==========");
+                }
+
+                if (GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet) == null
+                        || !GlobalSetConfInfo.IceBergCacheTableMap.containsKey(schemaKeyByParquet)) {
+                    log.warn("[IceBergPool] table {} schema not loaded, skip packet", schemaKeyByParquet);
+                    continue;
+                }
+
+                GlobalConfInfo.engineAtomicByTableKeyMap
+                        .computeIfAbsent(schemaKeyByParquetThreadID, k -> new AtomicInteger(0))
+                        .getAndIncrement();
+
+                initCacheIfAbsent(schemaKeyByParquet, schemaKeyByParquetThreadID);
+
+                String opType = packageReturnVo.getOperationType().toUpperCase();
+                List<RowOperation> opsBuffer = buildRowOperations(
+                        opType, rowsNum, columnsNum, rowUdbColumnMap,
+                        schemaKeyByParquet, schemaKeyByParquetThreadID, colNameByNumberKey,
+                        pktSeq);
+                log.info("[IceBergPool] pktSeq={} table={} op={} parsedOps={}{}",
+                        pktSeq, schemaKeyByParquet, opType, opsBuffer.size(),
+                        Constant.debugLogEnabled ? " opDetails=" + summarizeOps(opsBuffer, schemaKeyByParquet, 10) : "");
+
+                GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap
+                        .get(schemaKeyByParquetThreadID)
+                        .addAll(opsBuffer);
+
+                GlobalConfInfo.lastDataWriteTimerByParquetMap
+                        .put(schemaKeyByParquetThreadID, System.currentTimeMillis());
+
+                int currentCount = GlobalConfInfo.engineAtomicByTableKeyMap
+                        .get(schemaKeyByParquetThreadID).get();
+                if (currentCount % Constant.writeCountNoToHiveFile == 0) {
+                    triggerFlush(schemaKeyByParquet, schemaKeyByParquetThreadID, packageReturnVo, currentCount);
+                }
+
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                log.error("[IceBergPool] thread exit on error. threadId={}", threadID, ex);
+                break;
+            }
+        }
+    }
+
+    /**
+     * Build RowOperation list from packet. baseOffset = pktSeq * 1M for CDC ordering.
+     */
+    private List<RowOperation> buildRowOperations(
+            String opType,
+            int rowsNum,
+            int columnsNum,
+            Map<String, Udb_BcolumnVo> rowUdbColumnMap,
+            String schemaKeyByParquet,
+            String schemaKeyByParquetThreadID,
+            String colNameByNumberKey,
+            long pktSeq) {
+
+        List<RowOperation> result = new ArrayList<>(rowsNum);
+        long baseOffset = pktSeq * 1_000_000L;
+
+        if (("U".equals(opType) || "M".equals(opType)) && rowsNum == 2) {
+            GenericRecord newRecord = GenericRecord.create(
+                    GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
+            GenericRecord oldRecord = GenericRecord.create(
+                    GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
+            boolean hasNew = false, hasOld = false;
+            for (int rowNo = 0; rowNo < 2; rowNo++) {
+                for (int colNo = 0; colNo < columnsNum; colNo++) {
+                    Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(rowNo + "-" + colNo);
+                    colNameByNumberKey = schemaKeyByParquet + "." + columnInfo.getColumnName().toLowerCase();
+                    if (columnInfo.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
+                        continue;
+                    }
+                    if ((columnInfo.getCflag() & 1) == 1) {
+                        fillRecord(oldRecord, columnInfo, colNameByNumberKey, "I");
+                        hasOld = true;
+                    } else {
+                        fillRecord(newRecord, columnInfo, colNameByNumberKey, "I");
+                        hasNew = true;
+                    }
+                }
+            }
+            if (hasNew && hasOld) {
+                List<RowOperation> ops = buildOperation("U", newRecord, oldRecord, true, true, baseOffset, schemaKeyByParquet);
+                if (ops != null) result.addAll(ops);
+                return result;
+            }
+        }
+
+        for (int rowNo = 0; rowNo < rowsNum; rowNo++) {
+
+            GenericRecord newRecord = GenericRecord.create(
+                    GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
+            GenericRecord oldRecord = GenericRecord.create(
+                    GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
+
+            boolean hasNewData = false;
+            boolean hasOldData = false;
+
+            for (int colNo = 0; colNo < columnsNum; colNo++) {
+                Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(rowNo + "-" + colNo);
+                colNameByNumberKey = schemaKeyByParquet + "." + columnInfo.getColumnName().toLowerCase();
+                if(columnInfo.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
+
+                    switch(columnInfo.getColumnValue().toUpperCase()) {
+
+                        case "I":
+                            opType="I";
+                            break;
+                        case "U":
+                        case "UA":
+                        case "UB":
+                            opType="U";
+                            break;
+                        case "D":
+                            opType="D";
+                            break;
+                    }
+                    continue;
+                }
+                switch (opType) {
+                    case "I":
+                        fillRecord(newRecord, columnInfo, colNameByNumberKey, "I");
+                        hasNewData = true;
+                        break;
+
+                    case "U":
+                        if ((columnInfo.getCflag() & 1) == 1) {
+                            fillRecord(oldRecord, columnInfo, colNameByNumberKey, "I");
+                            hasOldData = true;
+                        } else {
+                            fillRecord(newRecord, columnInfo, colNameByNumberKey, "I");
+                            hasNewData = true;
+                        }
+                        break;
+
+                    case "D":
+                        // DELETE操作：cflag=1或5表示前镜像(old)，其他表示后镜像(new)
+                        // 对于DELETE，需要同时填充oldRecord和newRecord以保留主键信息
+                        if ((columnInfo.getCflag() & 1) == 1) {
+                            fillRecord(oldRecord, columnInfo, colNameByNumberKey, "I");
+                            hasOldData = true;
+                        } else {
+                            fillRecord(newRecord, columnInfo, colNameByNumberKey, "I");
+                            hasNewData = true;
+                        }
+                        break;
+                }
+            }
+
+            List<RowOperation> ops = buildOperation(opType, newRecord, oldRecord,
+                    hasNewData, hasOldData, baseOffset + rowNo, schemaKeyByParquet);
+            if (ops != null) {
+                result.addAll(ops);
+            }
+        }
+
+        return result;
+    }
+
+    private List<RowOperation> buildOperation(String opType,
+                                        GenericRecord newRecord,
+                                        GenericRecord oldRecord,
+                                        boolean hasNewData,
+                                        boolean hasOldData,
+                                        long offset,
+                                        String tableKeyName) {
+        boolean isTransaction = "transaction".equals(Constant.icebergWriteMode);
+        if (Constant.debugLogEnabled) {
+            log.info("[IceBergPool] buildOperation opType={} txMode={} hasNewData={} hasOldData={} offset={}",
+                    opType, isTransaction, hasNewData, hasOldData, offset);
+        }
+
+        switch (opType) {
+            case "U":
+                if (isTransaction && hasOldData && hasNewData) {
+                    return Collections.singletonList(RowOperation.update(oldRecord, newRecord, offset));
+                }
+                List<RowOperation> updateOps = new ArrayList<>();
+                if (hasOldData) {
+                    updateOps.add(RowOperation.insert(oldRecord, offset));
+                }
+                if (hasNewData) {
+                    updateOps.add(RowOperation.insert(newRecord, offset + 1));
+                }
+                return updateOps;
+
+            case "I":
+                return Collections.singletonList(RowOperation.insert(newRecord, offset));
+
+            case "D":
+                GenericRecord deleteRecord = chooseDeleteRecordByPk(tableKeyName, oldRecord, newRecord, hasOldData, hasNewData);
+                if (isTransaction && (hasNewData || hasOldData)) {
+                    return Collections.singletonList(RowOperation.delete(deleteRecord, offset));
+                }
+                return Collections.singletonList(RowOperation.insert(deleteRecord, offset));
+            default:
+                return Collections.emptyList();
+        }
+    }
+
+    private GenericRecord chooseDeleteRecordByPk(String tableKeyName,
+                                                 GenericRecord oldRecord,
+                                                 GenericRecord newRecord,
+                                                 boolean hasOldData,
+                                                 boolean hasNewData) {
+        List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
+        if (pkNames != null && !pkNames.isEmpty()) {
+            boolean oldPkReady = hasOldData && isPkReady(oldRecord, pkNames);
+            boolean newPkReady = hasNewData && isPkReady(newRecord, pkNames);
+            if (oldPkReady) {
+                if (Constant.debugLogEnabled) {
+                    log.info("[IceBergPool] delete choose OLD by PK table={} pkNames={}", tableKeyName, pkNames);
+                }
+                return oldRecord;
+            }
+            if (newPkReady) {
+                if (Constant.debugLogEnabled) {
+                    log.info("[IceBergPool] delete choose NEW by PK table={} pkNames={}", tableKeyName, pkNames);
+                }
+                return newRecord;
+            }
+            log.warn("[IceBergPool] delete PK missing on both sides, fallback table={} pkNames={}", tableKeyName, pkNames);
+        }
+        return hasOldData ? oldRecord : newRecord;
+    }
+
+    private boolean isPkReady(GenericRecord record, List<String> pkNames) {
+        if (record == null || pkNames == null || pkNames.isEmpty()) {
+            return false;
+        }
+        for (String pk : pkNames) {
+            Object val = record.getField(pk);
+            if (val == null || String.valueOf(val).isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String summarizeOps(List<RowOperation> ops, String tableKeyName, int limit) {
+        if (ops == null || ops.isEmpty()) {
+            return "[]";
+        }
+        List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
+        List<String> out = new ArrayList<>();
+        int max = Math.min(ops.size(), limit);
+        for (int i = 0; i < max; i++) {
+            RowOperation op = ops.get(i);
+            // DELETE op: oldRecord holds the chosen delete record (may come from after-image)
+            // Use same PK-aware fallback for display consistency
+            GenericRecord record;
+            if (op.getType() == RowOperation.OpType.DELETE) {
+                record = op.getOldRecord() != null ? op.getOldRecord() : op.getNewRecord();
+            } else {
+                record = op.getNewRecord() != null ? op.getNewRecord() : op.getOldRecord();
+            }
+            out.add(op.getType() + "@" + op.getBinlogOffset() + "{"
+                    + extractRecordKey(record, pkNames) + "}");
+        }
+        if (ops.size() > limit) {
+            out.add("...+" + (ops.size() - limit));
+        }
+        return out.toString();
+    }
+
+    private String extractRecordKey(GenericRecord record, List<String> pkNames) {
+        if (record == null) {
+            return "__NULL_RECORD__";
+        }
+        if (pkNames != null && !pkNames.isEmpty()) {
+            return pkNames.stream()
+                    .map(pk -> pk + "=" + safeString(record.getField(pk)))
+                    .collect(java.util.stream.Collectors.joining(","));
+        }
+        return record.struct().fields().stream()
+                .map(f -> f.name() + "=" + safeString(record.getField(f.name())))
+                .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private String safeString(Object v) {
+        return v == null ? "__NULL__" : v.toString();
+    }
+
+    private void fillRecord(GenericRecord record,
+                            Udb_BcolumnVo columnInfo,
+                            String colNameByNumberKey,
+                            String opType) {
+        try {
+            if (GlobalConfCommInfo.jddmEngineTypeByYloaderColMap.containsKey(colNameByNumberKey)) {
+                if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
+                    record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
+                }
+                return;
+            }
+
+            switch (columnInfo.getColTypeArr()[1]) {
+
+                case 0x02: // NUMBER
+                    if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
+                        record.setField(columnInfo.getColumnName().toLowerCase(), null);
+                    } else if (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.containsKey(colNameByNumberKey)) {
+                        switch (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey)) {
+                            case 1000: case 1100: case 1200:
+                                record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
+                                break;
+                            case 3000:
+                                record.setField(columnInfo.getColumnName().toLowerCase(),
+                                        Double.parseDouble(columnInfo.getColumnValue()));
+                                break;
+                            case 3100:
+                                record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
+                                break;
+                        }
+                    }
+                    break;
+
+                case -75: case -76: // TIMESTAMP
+                    if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
+                        record.setField(columnInfo.getColumnName().toLowerCase(), null);
+                    } else {
+                        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+                        record.setField(columnInfo.getColumnName().toLowerCase(),
+                                LocalDateTime.parse(columnInfo.getColumnValue(), fmt));
+                    }
+                    break;
+
+                case 0x64: case 0x65: // Binary_Float / Binary_Double
+                    if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
+                        record.setField(columnInfo.getColumnName().toLowerCase(),
+                                Double.parseDouble(columnInfo.getColumnValue()));
+                    }
+                    break;
+
+                case 0x70: case 0x71:
+                    if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
+                        if (GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.containsKey(colNameByNumberKey)) {
+                            record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
+                        } else {
+                            record.setField(columnInfo.getColumnName().toLowerCase(),
+                                    new String(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue())));
+                        }
+                    }
+                    break;
+
+                default:
+                    if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
+                        record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
+                    }
+                    break;
+            }
+        } catch (Exception e) {
+            log.warn("[IceBergPool] fillRecord failed col={} val={} err={}",
+                    columnInfo.getColumnName(), columnInfo.getColumnValue(), e.getMessage());
+        }
+    }
+
+    private void initCacheIfAbsent(String schemaKeyByParquet,
+                                   String schemaKeyByParquetThreadID) throws Exception {
+        if (GlobalSetConfInfo.IceBergTableGnericCacheMap.containsKey(schemaKeyByParquetThreadID)) {
+            return;
+        }
+        long startTimer = System.currentTimeMillis();
+        GenericRecord record = GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
+        GlobalSetConfInfo.IceBergTableGnericCacheMap.put(schemaKeyByParquetThreadID, record);
+        GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap
+                .putIfAbsent(schemaKeyByParquetThreadID, new ArrayList<>());
+        log.info("[IceBergPool] cache init done key={} cost={}ms",
+                schemaKeyByParquetThreadID, System.currentTimeMillis() - startTimer);
+    }
+
+    private void triggerFlush(String schemaKeyByParquet,
+                              String schemaKeyByParquetThreadID,
+                              PackageReturnVo packageReturnVo,
+                              int currentCount) throws Exception {
+
+        log.info("[IceBergPool] batch threshold reached, flush key={} count={} ops={}",
+                schemaKeyByParquetThreadID, currentCount,
+                GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(schemaKeyByParquetThreadID).size());
+
+/*        DataFileToIceBergOperationV1 dataFileToIceBergOperation = new DataFileToIceBergOperationV1();
+        dataFileToIceBergOperation.setSchemaKeyByParquet(schemaKeyByParquet);
+        dataFileToIceBergOperation.setSchemaKeyByParquetThreadID(schemaKeyByParquetThreadID);
+        dataFileToIceBergOperation.run();*/
+        IceBergBatchOperationHandler.flushAllThreadsForTable(schemaKeyByParquet);
+
+
+        GlobalConfInfo.lastDataWriteTimerByParquetMap
+                .put(schemaKeyByParquetThreadID, System.currentTimeMillis());
+
+//        waitForAllThreadsComplete();
+
+        Constant.writeToIceBergDBFlag = true;
+        GlobalSetConfInfo.IceBergOperationCompleteMap.clear();
+        GlobalSetConfInfo.IceBergOperationBeginMap.clear();
+
+        log.info("[IceBergPool] batch flush done key={}", schemaKeyByParquetThreadID);
+    }
+
+    private void waitForAllThreadsComplete() throws InterruptedException {
+        while (true) {
+            for (Map.Entry<String, Boolean> entry :
+                    GlobalSetConfInfo.IceBergOperationCompleteMap.entrySet()) {
+                log.info("[IceBergPool] waiting key={} done={} [{}/{}]",
+                        entry.getKey(), entry.getValue(),
+                        GlobalSetConfInfo.IceBergOperationBeginMap.size(),
+                        GlobalSetConfInfo.IceBergOperationCompleteMap.size());
+            }
+            if (GlobalSetConfInfo.IceBergOperationBeginMap.size()
+                    == GlobalSetConfInfo.IceBergOperationCompleteMap.size()) {
+                break;
+            }
+            Thread.sleep(1000);
+        }
+    }
 
 }

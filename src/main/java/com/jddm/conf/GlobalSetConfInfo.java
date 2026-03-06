@@ -1,9 +1,12 @@
 package com.jddm.conf;
+import com.jddm.vo.RowOperation;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 
+import javax.activation.MimeTypeParameterList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,9 +24,8 @@ public class GlobalSetConfInfo {
 	public static Map<String,Boolean> IceBergOperationCompleteMap = new ConcurrentHashMap<String,Boolean>();
 	public static Map<String,AtomicInteger> IceBergOperationBeginMap = new ConcurrentHashMap<String,AtomicInteger>();
 	public static ArrayBlockingQueue<Object> icebergEngineOperationQueue = new ArrayBlockingQueue(320000);
+    public static Map<String, List<String>> TablePkColCacheMap = new ConcurrentHashMap<>();
 
 
-
-
-
+    public static Map<String,List<RowOperation>> IceBergSchemaImmuTableOpsMap = new ConcurrentHashMap<>();
 }

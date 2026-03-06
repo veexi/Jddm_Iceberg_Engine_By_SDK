@@ -15,6 +15,7 @@ import com.jddm.manager.ServiceManager;
 import com.jddm.operation.ddl.IceBergTableOperationByEngine;
 import com.jddm.operation.timer.ReLoaderTableInfoBySqliteDB;
 import com.jddm.operation.timer.TimerByHiveCacheFileThread;
+import com.jddm.operation.timer.TimerByHiveCacheFileThreadV1;
 import com.jddm.thread.OperationTotalSyncByIceBergThreadPool;
 import com.jddm.utils.IcebergValidator;
 import com.publics.cache.TableAllCacheInfo;
@@ -280,12 +281,14 @@ public class StartIcebergEngine {
         ReLoaderTableInfoBySqliteDB reLoaderTableInfoBySqliteDB = null;
 
         try {
+            preloadTableDictFromSqlite();
+
             JddmEngineKillHandler jddmKillHandler = new JddmEngineKillHandler(5, TimeUnit.SECONDS);
             jddmKillHandler.registerSignal("TERM");
             jddmKillHandler.registerSignal("INT");
 
             scheduledThreadPool = Executors.newScheduledThreadPool(5);
-            TimerByHiveCacheFileThread timerByHiveCacheFileThread = new TimerByHiveCacheFileThread();
+            TimerByHiveCacheFileThreadV1 timerByHiveCacheFileThread = new TimerByHiveCacheFileThreadV1();
             scheduledThreadPool.scheduleAtFixedRate(timerByHiveCacheFileThread, 5, 30, TimeUnit.SECONDS);
 
             scheduledThreadPool = Executors.newScheduledThreadPool(3);
@@ -310,6 +313,73 @@ public class StartIcebergEngine {
 
         }
         return returnFlag;
+    }
+
+    /**
+     * 启动时从 SQLite 预加载全量表字典，使重启后 DML 无需等待 DDL 即可处理
+     */
+    private static void preloadTableDictFromSqlite() {
+        Logger log = LogManager.getLogger(StartIcebergEngine.class);
+        try {
+            SQLiteJDBC sqliteDB = new SQLiteJDBC();
+            List<String> allKeys = sqliteDB.queryJddmCacheTableList();
+            if (allKeys == null || allKeys.isEmpty()) {
+                log.info("[Preload] SQLite no table cache, skip");
+                return;
+            }
+            Set<String> tableKeys = new LinkedHashSet<>();
+            for (String key : allKeys) {
+                if (key != null && !key.endsWith("_source")) {
+                    tableKeys.add(key.toLowerCase());
+                }
+            }
+            if (tableKeys.isEmpty()) {
+                log.info("[Preload] no valid table key, skip");
+                return;
+            }
+            log.info("[Preload] start load {} tables from SQLite", tableKeys.size());
+            TableAllCacheInfo tableCacheInfo = new TableAllCacheInfo();
+            IceBergTableOperationByEngine iceBergTableOperationByEngine = new IceBergTableOperationByEngine();
+            Map<String, String> tableColumnMap = new LinkedHashMap<>();
+            int loaded = 0;
+            for (String key : tableKeys) {
+                try {
+                    byte[] tableInfoArr = sqliteDB.query_TableContentObject_ByKey(key);
+                    if (tableInfoArr == null || tableInfoArr.length < 4) {
+                        log.warn("[Preload] table {} no valid data, skip", key);
+                        continue;
+                    }
+                    TableInfoVo tableInfoDBVo = tableCacheInfo.serializableTableVo_ToByteArray(tableInfoArr);
+                    byte[] sourceTableInfoArr = sqliteDB.query_TableContentObject_ByKey(key + "_source");
+                    if (sourceTableInfoArr != null && sourceTableInfoArr.length > 3) {
+                        TableInfoVo sourceTableInfoDBVo = tableCacheInfo.serializableTableVo_ToByteArray(sourceTableInfoArr);
+                        GlobalConfCommInfo.cacheSourceTableInfoMap.put(key, sourceTableInfoDBVo);
+                        tableCacheInfo.mergeSourceAndYloaderDictionary(key, tableInfoDBVo);
+                        GlobalConfCommInfo.cacheSourceTableInfoMap.remove(key);
+                    }
+                    GlobalConfCommInfo.cacheTableInfoMap.put(key, tableInfoDBVo);
+                    if (Constant.settingDataBaseName != null && !Constant.settingDataBaseName.equals("")) {
+                        GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
+                                Constant.settingDataBaseName + "." + FileUtils.createTableName_ByJddmEngine(
+                                        tableInfoDBVo.getOwner(), tableInfoDBVo.getTableName()));
+                    } else {
+                        GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
+                                tableInfoDBVo.getOwner().toLowerCase() + "." + FileUtils.createTableName_ByJddmEngine(
+                                        tableInfoDBVo.getOwner(), tableInfoDBVo.getTableName()));
+                    }
+                    if (!tableInfoDBVo.getColumnList().isEmpty()) {
+                        iceBergTableOperationByEngine.importHiveTable_IceBerg_Table(tableInfoDBVo, tableColumnMap);
+                    }
+                    loaded++;
+                    log.info("[Preload] loaded table {}", key);
+                } catch (Exception e) {
+                    log.warn("[Preload] load table {} failed: {}", key, e.getMessage());
+                }
+            }
+            log.info("[Preload] done, loaded {} tables", loaded);
+        } catch (Exception e) {
+            log.warn("[Preload] SQLite preload failed: {}", e.getMessage());
+        }
     }
 
     public static void printAsciiVerison(boolean initializeFlag){

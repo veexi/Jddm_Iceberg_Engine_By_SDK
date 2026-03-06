@@ -17,6 +17,7 @@ import org.apache.iceberg.CatalogProperties;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.hive.HiveCatalog;
 import org.apache.iceberg.types.Types;
@@ -52,7 +53,7 @@ public class IceBergTableOperationByEngine {
 		
 		String setTableKeyName="";
 		Schema iceBergSchema = null;
-		
+        setTableKeyName = tableInfoVo.getOwner().toLowerCase()+"."+tableInfoVo.getTableName().toLowerCase();
 		StringBuffer columnSqlString = new StringBuffer();
 		StringBuffer addColumnInfoString = new StringBuffer();
 		StringBuffer columnNameString = new StringBuffer();
@@ -84,16 +85,15 @@ public class IceBergTableOperationByEngine {
 				for(Integer pkNo :pkColumnList){
 					
 					if(pkNo == columnVo.getColumnNo()){
-
-
-
+                        log.info("Table: {} ,PrimaryKeyName: {} ,pkNo: {}",setTableKeyName,columnVo.getColumnName().toLowerCase(),pkNo);
 						pkColumnMap.put(columnVo.getColumnName().toLowerCase(), pkNo+"");
 						break;
 					}
 				}
 			}
 		}
-		
+        List<String> pkNames = new ArrayList<>(pkColumnMap.keySet());
+        GlobalSetConfInfo.TablePkColCacheMap.put(setTableKeyName, pkNames);
 		if(!thisTableColMap.isEmpty()){
 			
 			TableColumnVo tableColumnVo=null;
@@ -224,7 +224,7 @@ public class IceBergTableOperationByEngine {
 			
 			
 			Types.NestedField nestedField = null;
-			setTableKeyName = tableInfoVo.getOwner().toLowerCase()+"."+tableInfoVo.getTableName().toLowerCase();
+
 
 			if (ConstantPubSet.logForAgentType == 2000) {
 				log.info(" --reload[ALL FieldType]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
@@ -264,20 +264,20 @@ public class IceBergTableOperationByEngine {
 					switch(columnVo.getNumberType()) {
 						case 1000: //NUMBER
 							
-							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(), 1000);
+							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 1000);
 //							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(38, 18));
 							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
 							iceBergTablefields.add(nestedField);
 
 							break;
 						case 1100: //NUMBER(*, 0)
-							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(), 1100);
+							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 1100);
 //							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(Integer.parseInt(columnVo.getColumnLen()), 0));
 							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
 			                iceBergTablefields.add(nestedField);
 							break;
 						case 1200: //NUMBER(%d)
-							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(), 1200);
+							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 1200);
 							if (Integer.parseInt(columnVo.getColumnLen()) > 38) {
 //			                    nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(38, 0));
 								nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
@@ -289,15 +289,15 @@ public class IceBergTableOperationByEngine {
 			                }
 							break;
 						case 3000: //NUMBER(%d,%d)
-							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(), 3000);
-							GlobalSetConfInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(), Integer.parseInt(columnVo.getColPrecision()));
+							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 3000);
+							GlobalSetConfInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), Integer.parseInt(columnVo.getColPrecision()));
 //							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(Integer.parseInt(columnVo.getColumnLen()), Integer.parseInt(columnVo.getColPrecision())));
 							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DoubleType.get());
 
 							iceBergTablefields.add(nestedField);
 							break;
 						case 3100: //FLOAT(%d) |DOUBLE(%d)
-							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(), 3100);
+							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 3100);
 							if (Integer.parseInt(columnVo.getColumnLen()) > 38) {
 //			                    nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(38, 0));
 								nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
@@ -334,7 +334,7 @@ public class IceBergTableOperationByEngine {
 					iceBergTablefields.add(nestedField);*/
 					switch(ConversionUtil.getIntFromBytes(columnVo.getSourceType())) {
 						case 5009: // bytes
-							GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(),columnVo.getColumnName().toLowerCase());
+							GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(),columnVo.getColumnName().toLowerCase());
 							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
 							iceBergTablefields.add(nestedField);
 							break;
@@ -367,7 +367,7 @@ public class IceBergTableOperationByEngine {
 		for(TableColumnVo columnVo: yloaderColumnList) {
 			Types.NestedField nestedField = null;
 			
-			GlobalConfCommInfo.jddmEngineTypeByYloaderColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase().toLowerCase(),columnVo.getColumnName().toLowerCase());
+			GlobalConfCommInfo.jddmEngineTypeByYloaderColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(),columnVo.getColumnName().toLowerCase());
 			nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
 			iceBergTablefields.add(nestedField);
 		}
@@ -392,7 +392,7 @@ public class IceBergTableOperationByEngine {
 			
 			Table iceBergTable;
 			PartitionSpec spec = null;
-					TableIdentifier tableIdentifier = TableIdentifier.of(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
+            TableIdentifier tableIdentifier = TableIdentifier.of(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
 			
 			log.info(" ========== JDBC IceBerg DDL_CreateSQL :::"+tableIdentifier.toString());
 			HiveCatalog catalog = new HiveCatalog();
@@ -407,11 +407,17 @@ public class IceBergTableOperationByEngine {
 			properties.put("format-version", "2");
 	        // 初始化catalog
 	        catalog.initialize("hive", properties);
-
+            log.info("------>>> fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo,Constant.hiveMetastoreUris);
 	        
 	        //spec = PartitionSpec.builderFor(GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName)).hour("event_time").build();
 	        spec = PartitionSpec.builderFor(GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName)).build();
-	        
+            Namespace ns = Namespace.of(tableInfoVo.getOwner().toLowerCase());
+
+            //如果库不存在，则创建它
+            if (!catalog.namespaceExists(ns)) {
+                catalog.createNamespace(ns);
+                log.info("Created missing namespace: {}", ns);
+            }
 			if(!catalog.tableExists(tableIdentifier)) {
 				properties.put("engine.hive.enabled", "true");
 

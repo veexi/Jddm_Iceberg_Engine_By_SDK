@@ -3,6 +3,7 @@ package com.jddm.killOper;
 import com.jddm.common.Constant;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
+import com.jddm.operation.IceBergBatchOperationHandler;
 import com.publics.common.ConstantPublic;
 import com.publics.conf.GlobalConfCommInfo;
 import com.publics.engine.state.EngineStateInfo;
@@ -21,9 +22,7 @@ import sun.misc.SignalHandler;
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -60,128 +59,86 @@ public class JddmEngineKillHandler implements SignalHandler{
 
 	@Override
 	public void handle(Signal signal) {
-		// TODO Auto-generated method stub
+        // TODO Auto-generated method stub
 
-		if (ConstantPublic.jddmEngineStatFlag && GlobalConfCommInfo.jddmEngineFullSyncOperationQueue.size() == 0) {
-			ConstantPublic.jddmEngineError_Msg = "stop Jddm Engine";
-			ConstantPublic.jddmEngineStatFlag = false;
-			Constant.customJddmEngineErrorFlag = 10004;
-			System.out.println(" ");
-
-
-			switch (signal.getNumber()) {
-				case 2:
-					System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmGeneralEngine] " + Constant.JddmEngineTypeInfo + "Recv System_Signal ---> ::[SIG" + signal.getName() + "|" + signal.getNumber() + "]-(ctrl+C) Begin Stop Engine ...");
-					break;
-				case 15:
-					System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmGeneralEngine] " + Constant.JddmEngineTypeInfo + "Recv System_Signal ---> ::[SIG" + signal.getName() + "|" + signal.getNumber() + "]-(kill -15) Begin Stop Engine ...");
-					break;
-				default:
-					System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmGeneralEngine] " + Constant.JddmEngineTypeInfo + "Recv System_Signal ---> ::[SIG" + signal.getName() + "|" + signal.getNumber() + "] Begin Stop Engine ...");
-					break;
-			}
-			String immuTableKeyName = "";
-			DataFile dataFile = null;
-			//===============================================================================================
-			// Total Synchronization Data Operation Processing Before Stopping The (Jddm) Engine
-			//===============================================================================================
-
-			if (!GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.isEmpty()) {
-				int maxTableLength = 0;
-				int posNo = 0;
-				String hivePartitionKeyValue = null;
-
-				System.out.println(" [Stop->JDDM_ENGINE] Jddm Hive Engine (" + ConstantPublic.jddmEngineDataType + ") Data Synchronization Complete .... ");
-				for (int i = 0; i < 5; i++) {
-
-					System.out.println(" [Stop->JDDM_ENGINE] Waitting (" + ConstantPublic.jddmEngineDataType + ") Memory Cache Opeation ... ...  ");
-					try {
-						Thread.sleep(1000);
-					} catch (InterruptedException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-				}
-				String[] splitArr = null;
-				String tableKeyName = null;
-				String parquetFileName = null;
-				int loopCount = 0;
-
-				System.out.println(" [Stop->JDDM_ENGINE] GlobalConfInfo.lastDataWriteTimerByParquetMap size:: " + GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
-				if (ConstantPublic.jddmEngineDataType.equals("ICEBREG")) {
-					try {
-
-						for (Map.Entry<String, Long> cacheTimerMap : GlobalConfInfo.lastDataWriteTimerByParquetMap.entrySet()) {
-
-							System.out.println(" [StopJddmEngine] Jddm Hive Engine [ICEBERG] =====>>> S&T ::" + cacheTimerMap.getKey() + " IceBreg Write  -> LastModifyTimer :: " + transferLongToDate("yyyy-MM-dd HH:mm:ss", cacheTimerMap.getValue()) + " > " + Constant.hiveDiffTimers + " ... ... ");
-
-							splitArr = cacheTimerMap.getKey().split("[.]");
-							immuTableKeyName = cacheTimerMap.getKey();
-
-							tableKeyName = splitArr[0] + "." + splitArr[1];
-							GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build();
-
-							String filepath = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).location() + "/" + UUID.randomUUID().toString();
-
-							OutputFile file = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).io().newOutputFile(filepath);
-							DataWriter<GenericRecord> dataWriter =
-									Parquet.writeData(file)
-											.schema(GlobalSetConfInfo.IceBergSchemaCahceMap.get(tableKeyName))
-											.createWriterFunc(GenericParquetWriter::buildWriter)
-											.overwrite()
-											.withSpec(PartitionSpec.unpartitioned())
-											.build();
+        if (ConstantPublic.jddmEngineStatFlag && GlobalConfCommInfo.jddmEngineFullSyncOperationQueue.size() == 0) {
+            ConstantPublic.jddmEngineError_Msg = "stop Jddm Engine";
+            ConstantPublic.jddmEngineStatFlag = false;
+            Constant.customJddmEngineErrorFlag = 10004;
+            System.out.println(" ");
 
 
-							try {
+            switch (signal.getNumber()) {
+                case 2:
+                    System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmIcebergEngine] " + Constant.JddmEngineTypeInfo + "Recv System_Signal ---> ::[SIG" + signal.getName() + "|" + signal.getNumber() + "]-(ctrl+C) Begin Stop Engine ...");
+                    break;
+                case 15:
+                    System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmIcebergEngine] " + Constant.JddmEngineTypeInfo + "Recv System_Signal ---> ::[SIG" + signal.getName() + "|" + signal.getNumber() + "]-(kill -15) Begin Stop Engine ...");
+                    break;
+                default:
+                    System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmIcebergEngine] " + Constant.JddmEngineTypeInfo + "Recv System_Signal ---> ::[SIG" + signal.getName() + "|" + signal.getNumber() + "] Begin Stop Engine ...");
+                    break;
+            }
+            System.out.println(" [StopJddmEngine] OpsMap.size="
+                    + GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.size());
+            System.out.println(" [StopJddmEngine] queue.size="
+                    + GlobalSetConfInfo.icebergEngineOperationQueue.size());
+            System.out.println(" [StopJddmEngine] OpsMap.keys="
+                    + GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.keySet());
+            String immuTableKeyName = "";
+            DataFile dataFile = null;
+            //===============================================================================================
+            // Total Synchronization Data Operation Processing Before Stopping The (Jddm) Engine
+            //===============================================================================================
 
-								System.out.println(" [StopJddmEngine] Jddm Hive Engine [ICEBERG] =====>>> " + "ThreadID Key ::" + cacheTimerMap.getKey() + " File ::" + filepath + " Count::" + GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(immuTableKeyName).build().size() + " ... ");
-								//log.info("----------------> Timer WriteSize ::"+GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(cacheTimerMap.getKey()).build().size());
-								for (GenericRecord record : GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.get(cacheTimerMap.getKey()).build()) {
-
-									dataWriter.write(record);
-								}
-
-							} finally {
-								dataWriter.close();
-
-							}
-
-							// 3. 将文件写入table中
-							dataFile = dataWriter.toDataFile();
-							GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName).newAppend().appendFile(dataFile).commit();
-
-							GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(immuTableKeyName);
-							GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.remove(immuTableKeyName);
-
-							GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(cacheTimerMap.getKey());
-
-
-						}
-					} catch (Exception ex) {
-						ex.printStackTrace();
-					} finally {
-						dataFile = null;
-					}
+            if (!GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.isEmpty()
+                    || !GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
 
 
-				}
-			}
-			try {
-				System.out.println("["+OperationTimes.printDataTime()+"] EXIT [StartJddmGeneralEngine] "+Constant.JddmEngineTypeInfo+"Begin Stop Please Waitting (3)Seconds ... ... ");
-				Thread.sleep(300);
-			} catch (InterruptedException e) {
-				// TODO Auto-generated catch block
-				e.printStackTrace();
-			}
-			EngineStateInfo.writeEngineStateForJddm("stop", "sucess");
-			System.out.println("["+OperationTimes.printDataTime()+"] EXIT [StartJddmGeneralEngine] "+Constant.JddmEngineTypeInfo+" Stoped Complete ! ");
-			System.out.println(" ");
-			System.exit(-1);
-		}
-	}
-	/***
-     * long 转换成 日期 再转换成String类型
+                while (!GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
+                    System.out.println(" [StopJddmEngine] queue draining, remaining="
+                            + GlobalSetConfInfo.icebergEngineOperationQueue.size());
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+
+                Set<String> tablesToFlush = new HashSet<>();
+                for (String key : GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.keySet()) {
+                    if (!GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(key).isEmpty()) {
+                        String[] split = key.split("[.]");
+                        tablesToFlush.add(split[0] + "." + split[1]);
+                    }
+                }
+                for (String flushTableName : tablesToFlush) {
+                    System.out.println(" [StopJddmEngine] force flush table=" + flushTableName);
+                    try {
+                        IceBergBatchOperationHandler.flushAllThreadsForTable(flushTableName);
+                        System.out.println(" [StopJddmEngine] flush done table=" + flushTableName);
+                    } catch (Exception ex) {
+                        System.out.println(" [StopJddmEngine] flush failed table=" + flushTableName);
+                        ex.printStackTrace();
+                    }
+                }
+            }
+
+            try {
+                System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmIcebergEngine] " + Constant.JddmEngineTypeInfo + "Begin Stop Please Waitting (3)Seconds ... ... ");
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                // TODO Auto-generated catch block
+                e.printStackTrace();
+            }
+            EngineStateInfo.writeEngineStateForJddm("stop", "sucess");
+            System.out.println("[" + OperationTimes.printDataTime() + "] EXIT [StartJddmIcebergEngine] " + Constant.JddmEngineTypeInfo + " Stoped Complete ! ");
+            System.out.println(" ");
+            System.exit(-1);
+        }
+    }
+	/**
+     * Convert long timestamp to date string.
      */
     public static String transferLongToDate(String dateFormat, Long millSec) {
         SimpleDateFormat sdf = new SimpleDateFormat(dateFormat);

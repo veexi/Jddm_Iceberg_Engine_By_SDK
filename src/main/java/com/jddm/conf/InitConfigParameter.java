@@ -114,6 +114,29 @@ public class InitConfigParameter {
             }
 
 
+            parameterStr = GlobalConfInfo.getConf().getValue("ICEBERG_WRITE_MODE");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                String mode = parameterStr.trim().toLowerCase();
+                if ("trajectory".equals(mode) || "transaction".equals(mode)) {
+                    Constant.icebergWriteMode = mode;
+                    parameterStrMap.put("ICEBERG_WRITE_MODE", mode);
+                } else {
+                    log.warn(" Invalid ICEBERG_WRITE_MODE={}, use default trajectory", parameterStr);
+                    parameterStrMap.put("ICEBERG_WRITE_MODE", Constant.icebergWriteMode);
+                }
+            } else {
+                parameterStrMap.put("ICEBERG_WRITE_MODE", Constant.icebergWriteMode);
+            }
+
+            parameterStr = GlobalConfInfo.getConf().getValue("ENGINE_LOG_LEVEL");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                Constant.debugLogEnabled = "debug".equalsIgnoreCase(parameterStr.trim());
+                parameterStrMap.put("ENGINE_LOG_LEVEL", parameterStr.trim().toLowerCase());
+            } else {
+                Constant.debugLogEnabled = false;
+                parameterStrMap.put("ENGINE_LOG_LEVEL", "info");
+            }
+
             parameterStr = GlobalConfInfo.getConf().getValue("ENGINE_THREAD_TOTAL_SYNC_CONCURRENT");
 
             if (parameterStr != null && !parameterStr.equals("")) {

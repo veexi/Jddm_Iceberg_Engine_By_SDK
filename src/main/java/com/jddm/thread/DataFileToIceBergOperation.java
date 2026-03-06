@@ -6,6 +6,7 @@ import com.jddm.conf.GlobalSetConfInfo;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.PartitionSpec;
+import org.apache.iceberg.Table;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.parquet.GenericParquetWriter;
 import org.apache.iceberg.deletes.EqualityDeleteWriter;
@@ -77,7 +78,50 @@ public Logger log = LogManager.getLogger(DataFileToIceBergOperation.class);
 					    dataWriter.close();
 					    
 					}
-				List<GenericRecord> deleteRecords = GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build();
+                List<GenericRecord> deleteRecords = GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build();
+
+                if (deleteRecords != null && !deleteRecords.isEmpty()) {
+                    Table iceBergTable = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName);
+
+                    // 1. 动态获取主键列表
+                    List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
+                    List<Integer> equalityFieldIds;
+
+                    if (pkNames != null && !pkNames.isEmpty()) {
+                        // 【情况 A】有主键表：仅提取主键列的 fieldId
+                        equalityFieldIds = pkNames.stream()
+                                .map(name -> iceBergTable.schema().findField(name).fieldId())
+                                .collect(Collectors.toList());
+                    } else {
+                        // 【情况 B】无主键表（生产兜底方案）：将该表的所有列作为 Equality 识别条件 (全字段精确删除)
+                        equalityFieldIds = iceBergTable.schema().columns().stream()
+                                .map(org.apache.iceberg.types.Types.NestedField::fieldId)
+                                .collect(Collectors.toList());
+                    }
+
+                    OutputFile deleteOut = iceBergTable.io().newOutputFile(
+                            iceBergTable.location() + "/delete/eq_del_" + UUID.randomUUID());
+
+                    // 2. 构建通用的 EqualityDeleteWriter
+                    EqualityDeleteWriter<GenericRecord> deleteWriter = Parquet.writeDeletes(deleteOut)
+                            .forTable(iceBergTable)
+                            .createWriterFunc(GenericParquetWriter::buildWriter)
+                            .equalityFieldIds(equalityFieldIds) // 传入动态算出的标识列 IDs
+                            .buildEqualityWriter();
+
+                    // 3. 写入删除记录 (对于无主键表，deleteRecord 里必须包含所有列的完整旧值)
+                    for (GenericRecord rec : deleteRecords) {
+                        deleteWriter.write(rec);
+                    }
+                    deleteWriter.close();
+
+                    // 4. 与数据插入文件一并 Commit
+                    iceBergTable.newRowDelta()
+                            .addDeletes(deleteWriter.result().deleteFiles().get(0))
+                            .addRows(dataWriter.toDataFile()) // 兼容有新增数据的情况
+                            .commit();
+                }
+/*				List<GenericRecord> deleteRecords = GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.get(immuTableKeyName).build();
 
 				if (deleteRecords != null && !deleteRecords.isEmpty()) {
 					// 构建等值删除文件
@@ -107,7 +151,7 @@ public Logger log = LogManager.getLogger(DataFileToIceBergOperation.class);
 					GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName)
 							.newRowDelta()
 							.addDeletes(deleteFile)
-//							.addRows(dataWriter.toDataFile())
+							.addRows(dataWriter.toDataFile())
 							.commit();
 
 					GlobalSetConfInfo.IceBergSchemaImmuTableDeleteRecordMap.remove(immuTableKeyName); // 删除缓存
@@ -117,7 +161,7 @@ public Logger log = LogManager.getLogger(DataFileToIceBergOperation.class);
 							.newAppend()
 							.appendFile(dataWriter.toDataFile())
 							.commit();
-				}
+				}*/
 
 
 				// 3. 将文件写入table中
