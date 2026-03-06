@@ -8,7 +8,9 @@ import com.jddm.operation.IceBergBatchOperationHandler;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -23,13 +25,13 @@ public class DataFileToIceBergOperationV1 extends Thread {
 
     @Override
     public void run() {
-        if (!Constant.writeToIceBergDBFlag) {
+        if (!Constant.writeToIceBergDBFlag.get()) {   // 问题4修复：AtomicBoolean.get()
             log.info("[DataFileToIceberg] writeToIceBergDBFlag=false skip threadId={}",
                     Thread.currentThread().getId());
             return;
         }
 
-        Constant.writeToIceBergDBFlag = false;
+        Constant.writeToIceBergDBFlag.set(false);   // 问题4修复：AtomicBoolean.set()
 
         String immuTableKeyName = schemaKeyByParquetThreadID;
         String[] splitArr       = immuTableKeyName.split("[.]");
@@ -39,8 +41,10 @@ public class DataFileToIceBergOperationV1 extends Thread {
             GlobalSetConfInfo.IceBergOperationBeginMap
                     .putIfAbsent(immuTableKeyName, new AtomicInteger(0));
 
-            List<RowOperation> orderedOps =
+            LinkedBlockingQueue<RowOperation> opsQueue =
                     GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(immuTableKeyName);
+            List<RowOperation> orderedOps = new ArrayList<>();
+            if (opsQueue != null) opsQueue.drainTo(orderedOps);
 
             if (orderedOps == null || orderedOps.isEmpty()) {
                 log.info("[DataFileToIceberg] ops empty skip key={}", immuTableKeyName);

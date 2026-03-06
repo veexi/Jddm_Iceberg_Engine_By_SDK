@@ -101,6 +101,7 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
                 continue;
             }
 
+            // LinkedBlockingQueue.isEmpty() 是线程安全的，可直接用于检查该线程分区是否有待 flush 数据
             if (!GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.containsKey(immuTableKeyName)
                     || GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(immuTableKeyName).isEmpty()) {
                 continue;

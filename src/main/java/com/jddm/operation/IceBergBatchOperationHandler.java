@@ -239,7 +239,7 @@ public class IceBergBatchOperationHandler {
         FileFormat format = FileFormat.PARQUET;
         OutputFile outputFile = table.io().newOutputFile(
                 new Path(table.location(), "data/" + tableKeyName.replace(".", "/")
-                        + "/" + System.currentTimeMillis() + ".parquet").toString());
+                        + "/" + UUID.randomUUID() + ".parquet").toString());
 
         FileAppender<GenericRecord> appender = Parquet.write(outputFile)
                 .schema(schema)
@@ -283,11 +283,19 @@ public class IceBergBatchOperationHandler {
     public static void flushAllThreadsForTable(String tableKeyName) throws Exception {
         List<RowOperation> allOps = new ArrayList<>();
         List<String> keysToRemove = new ArrayList<>();
-        for (Map.Entry<String, List<RowOperation>> entry :
+
+        for (Map.Entry<String, java.util.concurrent.LinkedBlockingQueue<RowOperation>> entry :
                 GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.entrySet()) {
             String key = entry.getKey();
-            if (key.startsWith(tableKeyName + ".")) {
-                allOps.addAll(entry.getValue());
+            if (!key.startsWith(tableKeyName + ".")) continue;
+
+            // drainTo 原子地把队列中现有数据全部取走，之后消费线程继续 offer 到同一个队列，互不干扰。
+            // 若两个线程同时 flush 同一张表，第二个线程 drain 到空列表会在下面 isEmpty() 处直接 return，
+            // 不会出现数据被写两次的情况。
+            List<RowOperation> drained = new ArrayList<>();
+            entry.getValue().drainTo(drained);
+            if (!drained.isEmpty()) {
+                allOps.addAll(drained);
                 keysToRemove.add(key);
             }
         }
@@ -297,8 +305,8 @@ public class IceBergBatchOperationHandler {
         allOps.sort(Comparator.comparingLong(RowOperation::getBinlogOffset));
         flushBatch(tableKeyName, tableKeyName, allOps);
 
+        // 只清 generic cache 和 timer，OpsMap 本身不删（队列留着继续接收新数据）
         keysToRemove.forEach(k -> {
-            GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.remove(k);
             GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(k);
             GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(k);
         });
