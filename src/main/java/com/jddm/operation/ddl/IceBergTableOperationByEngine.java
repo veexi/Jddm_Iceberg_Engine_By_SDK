@@ -8,6 +8,7 @@ import com.jddm.common.Constant;
 import com.jddm.common.ConstantColType;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
+import com.jddm.utils.KerberosAuthUtil;
 import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
 import com.publics.conf.GlobalConfCommInfo;
@@ -395,10 +396,11 @@ public class IceBergTableOperationByEngine {
             TableIdentifier tableIdentifier = TableIdentifier.of(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
 			
 			log.info(" ========== JDBC IceBerg DDL_CreateSQL :::"+tableIdentifier.toString());
-			HiveCatalog catalog = new HiveCatalog();
-			Configuration conf = new Configuration();
-			catalog.setConf(conf);
-	        Map<String, String> properties = new HashMap<String, String>();
+            HiveCatalog catalog = new HiveCatalog();
+            Configuration hadoopConf = KerberosAuthUtil.buildHadoopConf();
+            hadoopConf.addResource(new org.apache.hadoop.fs.Path("/dsg/wjl/Jddm_Iceberg_Engine_By_SDK/config/hive-site.xml"));
+            catalog.setConf(hadoopConf);
+            Map<String, String> properties = new HashMap<String, String>();
 			//	        properties.put(CatalogProperties.WAREHOUSE_LOCATION, "hdfs://10.0.0.47:8020");
 			properties.put(CatalogProperties.WAREHOUSE_LOCATION, Constant.fsDefaultInfo);
 			//	        properties.put(CatalogProperties.URI, "thrift://10.0.0.47:9083");

@@ -232,9 +232,9 @@ public class IceBergBatchOperationHandler {
         return incoming;
     }
 
-    private static DataFile writeDataFile(Table table,
-                                          List<GenericRecord> records,
-                                          String tableKeyName) throws Exception {
+    public static DataFile writeDataFile(Table table,
+                                         List<GenericRecord> records,
+                                         String tableKeyName) throws Exception {
         Schema schema = table.schema();
         FileFormat format = FileFormat.PARQUET;
         OutputFile outputFile = table.io().newOutputFile(

@@ -16,8 +16,10 @@ import com.jddm.operation.ddl.IceBergTableOperationByEngine;
 import com.jddm.operation.timer.ReLoaderTableInfoBySqliteDB;
 import com.jddm.operation.timer.TimerByHiveCacheFileThread;
 import com.jddm.operation.timer.TimerByHiveCacheFileThreadV1;
+import com.jddm.operation.timer.TimerByIcebergCompactFileThread;
 import com.jddm.thread.OperationTotalSyncByIceBergThreadPool;
 import com.jddm.utils.IcebergValidator;
+import com.jddm.utils.KerberosAuthUtil;
 import com.publics.cache.TableAllCacheInfo;
 import com.publics.common.ConstantFileInfoSet;
 import com.publics.common.ConstantPubSet;
@@ -274,7 +276,50 @@ public class StartIcebergEngine {
  * @author      （创建人）: mjddw
  * @since       （创建时间）: 2025/5/22 16:53
  ***/
-    private static boolean initializeServices() throws InitializationException {
+private static boolean initializeServices() throws InitializationException {
+    boolean returnFlag = false;
+    ExecutorService fixedThreadPool = null;
+    ScheduledExecutorService scheduledThreadPool = null;
+    ReLoaderTableInfoBySqliteDB reLoaderTableInfoBySqliteDB = null;
+
+    try {
+        KerberosAuthUtil.loginFromKeytab();
+        preloadTableDictFromSqlite();
+
+        JddmEngineKillHandler jddmKillHandler = new JddmEngineKillHandler(5, TimeUnit.SECONDS);
+        jddmKillHandler.registerSignal("TERM");
+        jddmKillHandler.registerSignal("INT");
+
+        scheduledThreadPool = Executors.newScheduledThreadPool(6);
+
+        scheduledThreadPool.scheduleAtFixedRate(
+                new TimerByHiveCacheFileThreadV1(), 5, 30, TimeUnit.SECONDS);
+
+        GlobalConfInfo.reloadTableVoCalcMap.put(Constant.reloadKeyName, new AtomicInteger(0));
+        scheduledThreadPool.scheduleAtFixedRate(
+                new ReLoaderTableInfoBySqliteDB(), 5, 5, TimeUnit.SECONDS);
+
+        scheduledThreadPool.scheduleAtFixedRate(
+                new TimerByIcebergCompactFileThread(), 5,
+                Constant.compactIntervalSeconds, TimeUnit.SECONDS);
+
+        scheduledThreadPool.scheduleAtFixedRate(
+                KerberosAuthUtil::renewTgtIfNeeded, 1, 1, TimeUnit.HOURS);
+
+
+        fixedThreadPool = Executors.newFixedThreadPool(50);
+        for (int i = 0; i < totalSyncNO; i++) {
+            fixedThreadPool.execute(new OperationTotalSyncByIceBergThreadPool());
+        }
+        returnFlag = true;
+
+    } catch (Exception e) {
+        returnFlag = false;
+        throw new InitializationException("Service initialization failed", e);
+    }
+    return returnFlag;
+}
+/*    private static boolean initializeServices() throws InitializationException {
         boolean returnFlag = false;
         ExecutorService fixedThreadPool = null;
         ScheduledExecutorService scheduledThreadPool = null;
@@ -313,7 +358,7 @@ public class StartIcebergEngine {
 
         }
         return returnFlag;
-    }
+    }*/
 
     /**
      * 启动时从 SQLite 预加载全量表字典，使重启后 DML 无需等待 DDL 即可处理
