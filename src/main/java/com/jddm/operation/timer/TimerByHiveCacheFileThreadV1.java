@@ -22,11 +22,11 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
 
     @Override
     public void run() {
-        log.info("=====>heartBeat....." + GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
+        log.info("[tid={}] =====>heartBeat.....{}", Thread.currentThread().getId(), GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
         try {
             getIceBergHiveCacheFiles();
         } catch (Exception e) {
-            log.error("[TimerFlush] Timer Commit Cache File Exception : {}", e.getMessage(), e);
+            log.error("[TimerFlush][tid={}] Timer Commit Cache File Exception : {}", Thread.currentThread().getId(), e.getMessage(), e);
         }
     }
 
@@ -53,9 +53,7 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
                 String[] splitArr   = immuTableKeyName.split("[.]");
                 String tableKeyName = splitArr[0] + "." + splitArr[1];
 
-                log.info("[TimerFlush] 触发定时 flush. key={} idleSeconds={} lastWriteTime={}",
-                        immuTableKeyName, idleSeconds,
-                        transferLongToDate("yyyy-MM-dd HH:mm:ss", entry.getValue()));
+                log.info("[TimerFlush][tid={}] 触发定时 flush. key={} idleSeconds={} lastWriteTime={}", Thread.currentThread().getId(), immuTableKeyName, idleSeconds, transferLongToDate("yyyy-MM-dd HH:mm:ss", entry.getValue()));
 
                 try {
                     // ===== 取出有序操作列表并 flush =====
@@ -71,10 +69,10 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
                     GlobalSetConfInfo.IceBergSchemaImmuTableRecordMap.remove(immuTableKeyName);
                     GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(immuTableKeyName);
 
-                    log.info("[TimerFlush] 定时 flush 完成. key={}", immuTableKeyName);
+                    log.info("[TimerFlush][tid={}] 定时 flush 完成. key={}", Thread.currentThread().getId(), immuTableKeyName);
 
                 } catch (Exception ex) {
-                    log.error("[TimerFlush] 定时 flush 异常. key={}", immuTableKeyName, ex);
+                    log.error("[TimerFlush][tid={}] 定时 flush 异常. key={}", Thread.currentThread().getId(), immuTableKeyName, ex);
                     // 定时器里不能让异常中断整个循环，此处记录即可，下次定时器继续重试
                     ex.printStackTrace();
                 }
@@ -114,9 +112,9 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
 
         // flush 完成后，flushAllThreadsForTable 内部负责清理缓存
         for (String tableKeyName : tablesToFlush) {
-            log.info("[TimerFlush] trigger flush table={}", tableKeyName);
+            log.info("[TimerFlush][tid={}] trigger flush table={}", Thread.currentThread().getId(), tableKeyName);
             flushAllThreadsForTable(tableKeyName);
-            log.info("[TimerFlush] flush done table={}", tableKeyName);
+            log.info("[TimerFlush][tid={}] flush done table={}", Thread.currentThread().getId(), tableKeyName);
         }
     }
 }

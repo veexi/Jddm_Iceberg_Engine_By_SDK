@@ -72,20 +72,51 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
                 // DEBUG 模式：逐列打印原始 CDC 数据
                 if (Constant.debugLogEnabled) {
-                    log.info("[IceBergPool] ========== CDC Packet Info ==========");
-                    log.info("[IceBergPool] pktSeq={} table={} opType={} rows={} cols={}",
-                            pktSeq, schemaKeyByParquet, packageReturnVo.getOperationType(), rowsNum, columnsNum);
-                    for (Map.Entry<String, Udb_BcolumnVo> entry : rowUdbColumnMap.entrySet()) {
-                        Udb_BcolumnVo col = entry.getValue();
-                        log.info("[IceBergPool] colData: key={} | name={} | value={} | cflag={}",
-                                entry.getKey(), col.getColumnName(), col.getColumnValue(), col.getCflag());
+                    String rawOpType = packageReturnVo.getOperationType().toUpperCase();
+                    String cdcFileNo = packageReturnVo.getFileNo();
+
+                    // 快速路径（M/U + rowsNum==2）：不读 merger 列，真实类型直接是 U
+                    boolean isFastPath = ("U".equals(rawOpType) || "M".equals(rawOpType)) && rowsNum == 2;
+
+                    log.info("[IceBergPool][tid={}] ========== CDC Packet Info [batch={}] [fileNo={}] [table={}] [rawOp={}] ==========", Thread.currentThread().getId(), pktSeq, cdcFileNo, schemaKeyByParquet, rawOpType);
+                    log.info("[IceBergPool][tid={}] pktSeq={} fileNo={} table={} rawOp={} fastPath={} rows={} cols={}", Thread.currentThread().getId(), pktSeq, cdcFileNo, schemaKeyByParquet, rawOpType, isFastPath, rowsNum, columnsNum);
+
+                    for (int rowNo = 0; rowNo < rowsNum; rowNo++) {
+                        // 先扫一遍该行，找出真实 opType
+                        String resolvedOp = isFastPath ? "U" : rawOpType;
+                        if (!isFastPath) {
+                            for (int colNo = 0; colNo < columnsNum; colNo++) {
+                                Udb_BcolumnVo scanCol = rowUdbColumnMap.get(rowNo + "-" + colNo);
+                                if (scanCol != null && scanCol.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
+                                    String mergerVal = scanCol.getColumnValue() == null ? "" : scanCol.getColumnValue().toUpperCase();
+                                    switch (mergerVal) {
+                                        case "I":  resolvedOp = "I"; break;
+                                        case "U": case "UA": case "UB": resolvedOp = "U"; break;
+                                        case "D":  resolvedOp = "D"; break;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 按真实 opType 过滤后输出
+                        for (int colNo = 0; colNo < columnsNum; colNo++) {
+                            Udb_BcolumnVo col = rowUdbColumnMap.get(rowNo + "-" + colNo);
+                            if (col == null) continue;
+                            // merger_jddm_oper_type 是控制列，不是数据列，跳过
+                            if (col.getColumnName().equals(ConstantPubSet.MergerColKeyName)) continue;
+                            // INSERT 无 before-image，cflag&1==1 的字段无效，过滤
+                            if ("I".equals(resolvedOp) && (col.getCflag() & 1) == 1) continue;
+
+                            log.info("[tid={}]  bfrc={}-{}-{} | table={} | Op={} | name={} | value={} | cflag={}", Thread.currentThread().getId(), pktSeq, cdcFileNo, rowNo + "-" + colNo , schemaKeyByParquet, resolvedOp, col.getColumnName(), col.getColumnValue(), col.getCflag());
+                        }
                     }
-                    log.info("[IceBergPool] ========== End Packet Info ==========");
+                    log.info("[IceBergPool][tid={}] ========== End Packet Info [batch={}] [fileNo={}] [table={}] ==========", Thread.currentThread().getId(), pktSeq, cdcFileNo, schemaKeyByParquet);
                 }
 
                 if (GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet) == null
                         || !GlobalSetConfInfo.IceBergCacheTableMap.containsKey(schemaKeyByParquet)) {
-                    log.warn("[IceBergPool] table {} schema not loaded, skip packet", schemaKeyByParquet);
+                    log.warn("[IceBergPool][tid={}] table {} schema not loaded, skip packet", Thread.currentThread().getId(), schemaKeyByParquet);
                     continue;
                 }
 
@@ -100,9 +131,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         opType, rowsNum, columnsNum, rowUdbColumnMap,
                         schemaKeyByParquet, schemaKeyByParquetThreadID, colNameByNumberKey,
                         pktSeq);
-                log.info("[IceBergPool] pktSeq={} table={} op={} parsedOps={}{}",
-                        pktSeq, schemaKeyByParquet, opType, opsBuffer.size(),
-                        Constant.debugLogEnabled ? " opDetails=" + summarizeOps(opsBuffer, schemaKeyByParquet, 10) : "");
+                log.info("[IceBergPool][tid={}] pktSeq={} table={} op={} parsedOps={}{}", Thread.currentThread().getId(), pktSeq, schemaKeyByParquet, opType, opsBuffer.size(), Constant.debugLogEnabled ? " opDetails=" + summarizeOps(opsBuffer, schemaKeyByParquet, 10) : "");
 
                 GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap
                         .get(schemaKeyByParquetThreadID)
@@ -116,17 +145,17 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         .addAndGet(rowsNum);
 
                 if (currentCount >= Constant.writeCountNoToHiveFile) {
-                    log.info("[IcebergPool] count rows ::  "+currentCount+">="+Constant.writeCountNoToHiveFile);
+                    log.info("[IcebergPool][tid={}] count rows ::  {}>={}", Thread.currentThread().getId(), currentCount, Constant.writeCountNoToHiveFile);
                     triggerFlush(schemaKeyByParquet, schemaKeyByParquetThreadID, packageReturnVo, currentCount);
                     // 提交后立刻重置该线程的计数器
 //                    GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID).set(0);
                 }else {
-                    log.info("[IcebergPool] count rows ::  "+currentCount+"<"+Constant.writeCountNoToHiveFile);
+                    log.info("[IcebergPool][tid={}] count rows ::  {}<{}", Thread.currentThread().getId(), currentCount, Constant.writeCountNoToHiveFile);
                 }
 
             } catch (Exception ex) {
                 ex.printStackTrace();
-                log.error("[IceBergPool] thread exit on error. threadId={}", threadID, ex);
+                log.error("[IceBergPool][tid={}] thread exit on error. threadId={}", Thread.currentThread().getId(), threadID, ex);
                 break;
             }
         }
@@ -260,8 +289,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                                               String tableKeyName) {
         boolean isTransaction = "transaction".equals(Constant.icebergWriteMode);
         if (Constant.debugLogEnabled) {
-            log.info("[IceBergPool] buildOperation opType={} txMode={} hasNewData={} hasOldData={} offset={}",
-                    opType, isTransaction, hasNewData, hasOldData, offset);
+            log.info("[IceBergPool][tid={}] buildOperation table={} opType={} txMode={} hasNewData={} hasOldData={} offset={}", Thread.currentThread().getId(), tableKeyName, opType, isTransaction, hasNewData, hasOldData, offset);
         }
 
         boolean hasPk = hasPk(tableKeyName);
@@ -277,8 +305,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
                         if (!oldPkString.equals(newPkString)) {
                             if (Constant.debugLogEnabled) {
-                                log.info("[IceBergPool] UPDATE changed PK: {} -> {}, splitting into DELETE + INSERT",
-                                        oldPkString, newPkString);
+                                log.info("[IceBergPool][tid={}] UPDATE changed PK table={}: {} -> {}, splitting into DELETE + INSERT", Thread.currentThread().getId(), tableKeyName, oldPkString, newPkString);
                             }
                             // 主键发生变更，拆分为先删后插
                             List<RowOperation> splitOps = new ArrayList<>(2);
@@ -294,8 +321,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         // 问题2场景：CDC 只发后镜像的单行 UPDATE 包。
                         // 此时无前镜像，无法做 Equality Delete，改为 delete(new)+insert(new) 语义兜底：
                         // 先删后写，保证幂等，不产生重复行。
-                        log.warn("[IceBergPool] UPDATE only after-image, fallback delete+insert table={} offset={}",
-                                tableKeyName, offset);
+                        log.warn("[IceBergPool][tid={}] UPDATE only after-image, fallback delete+insert table={} offset={}", Thread.currentThread().getId(), tableKeyName, offset);
                         List<RowOperation> ops = new ArrayList<>(2);
                         ops.add(RowOperation.delete(newRecord, offset));
                         ops.add(RowOperation.insert(newRecord, offset + 1));
@@ -304,8 +330,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 }
                 // 无主键表 transaction 模式退化为轨迹模式（insert only），或 hasOldData/hasNewData 不完整时兜底
                 if (Constant.debugLogEnabled) {
-                    log.info("[IceBergPool] UPDATE degrade to trajectory hasPk={} hasOld={} hasNew={} table={}",
-                            hasPk, hasOldData, hasNewData, tableKeyName);
+                    log.info("[IceBergPool][tid={}] UPDATE degrade to trajectory hasPk={} hasOld={} hasNew={} table={}", Thread.currentThread().getId(), hasPk, hasOldData, hasNewData, tableKeyName);
                 }
                 List<RowOperation> updateOps = new ArrayList<>();
                 if (hasOldData) {
@@ -322,7 +347,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             case "D":
                 // 两侧都没有数据（极端异常包），直接跳过，绝不写入空 record 产生 NULL 行
                 if (!hasOldData && !hasNewData) {
-                    log.error("[IceBergPool] DELETE skip: no data on either side, table={} offset={}", tableKeyName, offset);
+                    log.error("[IceBergPool][tid={}] DELETE skip: no data on either side, table={} offset={}", Thread.currentThread().getId(), tableKeyName, offset);
                     return Collections.emptyList();
                 }
 
@@ -331,8 +356,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     GenericRecord deleteRecord = chooseDeleteRecordByPk(
                             tableKeyName, oldRecord, newRecord, hasOldData, hasNewData);
                     if (deleteRecord == null) {
-                        log.error("[IceBergPool] DELETE skip: PK fill failed, cannot locate row table={} offset={}",
-                                tableKeyName, offset);
+                        log.error("[IceBergPool][tid={}] DELETE skip: PK fill failed, cannot locate row table={} offset={}", Thread.currentThread().getId(), tableKeyName, offset);
                         return Collections.emptyList();
                     }
                     return Collections.singletonList(RowOperation.delete(deleteRecord, offset));
@@ -340,7 +364,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
                 // 轨迹模式（所有表）或事务模式无主键表：退化为 insert，保留 PK 感知选择逻辑
                 if (!hasPk && Constant.debugLogEnabled) {
-                    log.info("[IceBergPool] DELETE degrade to trajectory (no PK) table={}", tableKeyName);
+                    log.info("[IceBergPool][tid={}] DELETE degrade to trajectory (no PK) table={}", Thread.currentThread().getId(), tableKeyName);
                 }
                 // 优先取 PK 完整的前镜像，其次后镜像，最后按 hasOldData 兜底，与原 chooseDeleteRecordByPk 行为一致
                 List<String> pkNamesForTraj = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
@@ -390,7 +414,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         boolean oldPkReady = hasOldData && isPkReady(oldRecord, pkNames);
         if (oldPkReady) {
             if (Constant.debugLogEnabled) {
-                log.info("[IceBergPool] delete choose OLD by PK table={} pkNames={}", tableKeyName, pkNames);
+                log.info("[IceBergPool][tid={}] delete choose OLD by PK table={} pkNames={}", Thread.currentThread().getId(), tableKeyName, pkNames);
             }
             return oldRecord;
         }
@@ -398,16 +422,15 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         boolean newPkReady = hasNewData && isPkReady(newRecord, pkNames);
         if (newPkReady) {
             if (Constant.debugLogEnabled) {
-                log.info("[IceBergPool] delete choose NEW by PK table={} pkNames={}", tableKeyName, pkNames);
+                log.info("[IceBergPool][tid={}] delete choose NEW by PK table={} pkNames={}", Thread.currentThread().getId(), tableKeyName, pkNames);
             }
             return newRecord;
         }
 
         // PK 两侧均不完整，极可能是 fillRecord 类型转换异常导致字段为 null
         // 返回 null → buildOperation 跳过本次 DELETE，避免按错误主键删行
-        log.error("[IceBergPool] DELETE aborted: PK fill failed on both sides, table={} pkNames={} "
-                        + "hasOld={} hasNew={} — check fillRecord type-conversion errors above",
-                tableKeyName, pkNames, hasOldData, hasNewData);
+        log.error("[IceBergPool][tid={}] DELETE aborted: PK fill failed on both sides, table={} pkNames={} hasOld={} hasNew={} — check fillRecord type-conversion errors above",
+                Thread.currentThread().getId(), tableKeyName, pkNames, hasOldData, hasNewData);
         return null;
     }
 
@@ -542,8 +565,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     break;
             }
         } catch (Exception e) {
-            log.warn("[IceBergPool] fillRecord failed col={} val={} err={}",
-                    columnInfo.getColumnName(), columnInfo.getColumnValue(), e.getMessage());
+            log.warn("[IceBergPool][tid={}] fillRecord failed col={} val={} err={}", Thread.currentThread().getId(), columnInfo.getColumnName(), columnInfo.getColumnValue(), e.getMessage());
         }
     }
 
@@ -557,8 +579,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         GlobalSetConfInfo.IceBergTableGnericCacheMap.put(schemaKeyByParquetThreadID, record);
         GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap
                 .putIfAbsent(schemaKeyByParquetThreadID, new LinkedBlockingQueue<>());
-        log.info("[IceBergPool] cache init done key={} cost={}ms",
-                schemaKeyByParquetThreadID, System.currentTimeMillis() - startTimer);
+        log.info("[IceBergPool][tid={}] cache init done key={} cost={}ms", Thread.currentThread().getId(), schemaKeyByParquetThreadID, System.currentTimeMillis() - startTimer);
     }
 
     private void triggerFlush(String schemaKeyByParquet,
@@ -566,9 +587,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                               PackageReturnVo packageReturnVo,
                               int currentCount) throws Exception {
 
-        log.info("[IceBergPool] batch threshold reached, flush key={} count={} ops={}",
-                schemaKeyByParquetThreadID, currentCount,
-                GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(schemaKeyByParquetThreadID).size());
+        log.info("[IceBergPool][tid={}] batch threshold reached, flush key={} count={} ops={}", Thread.currentThread().getId(), schemaKeyByParquetThreadID, currentCount, GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(schemaKeyByParquetThreadID).size());
 
 /*        DataFileToIceBergOperationV1 dataFileToIceBergOperation = new DataFileToIceBergOperationV1();
         dataFileToIceBergOperation.setSchemaKeyByParquet(schemaKeyByParquet);
@@ -586,17 +605,14 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         GlobalSetConfInfo.IceBergOperationCompleteMap.clear();
         GlobalSetConfInfo.IceBergOperationBeginMap.clear();
 
-        log.info("[IceBergPool] batch flush done key={}", schemaKeyByParquetThreadID);
+        log.info("[IceBergPool][tid={}] batch flush done key={}", Thread.currentThread().getId(), schemaKeyByParquetThreadID);
     }
 
     private void waitForAllThreadsComplete() throws InterruptedException {
         while (true) {
             for (Map.Entry<String, Boolean> entry :
                     GlobalSetConfInfo.IceBergOperationCompleteMap.entrySet()) {
-                log.info("[IceBergPool] waiting key={} done={} [{}/{}]",
-                        entry.getKey(), entry.getValue(),
-                        GlobalSetConfInfo.IceBergOperationBeginMap.size(),
-                        GlobalSetConfInfo.IceBergOperationCompleteMap.size());
+                log.info("[IceBergPool][tid={}] waiting key={} done={} [{}/{}]", Thread.currentThread().getId(), entry.getKey(), entry.getValue(), GlobalSetConfInfo.IceBergOperationBeginMap.size(), GlobalSetConfInfo.IceBergOperationCompleteMap.size());
             }
             if (GlobalSetConfInfo.IceBergOperationBeginMap.size()
                     == GlobalSetConfInfo.IceBergOperationCompleteMap.size()) {
