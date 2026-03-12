@@ -50,6 +50,15 @@ public class KerberosAuthUtil {
         String configPath = Constant.basicWorkPath + File.separator + "config" + File.separator;
 
         try {
+            // 关键代码：直接使用 org.apache.hadoop.fs.Path，强制让底层优先使用本地配置覆盖系统默认配置
+            conf.addResource(new org.apache.hadoop.fs.Path(configPath + "core-site.xml"));
+            conf.addResource(new org.apache.hadoop.fs.Path(configPath + "hdfs-site.xml"));
+            conf.addResource(new org.apache.hadoop.fs.Path(configPath + "hive-site.xml"));
+        } catch (Exception e) {
+            log.error("[Kerberos] Error loading local Hadoop XML configs", e);
+        }
+/*
+        try {
             File coreFile = new File(configPath + "core-site.xml");
             if (coreFile.exists()) {
                 conf.addResource(coreFile.toURI().toURL());
@@ -67,6 +76,7 @@ public class KerberosAuthUtil {
         } catch (Exception e) {
             log.error("[Kerberos] Error loading local Hadoop XML configs", e);
         }
+*/
 
         conf.set("fs.hdfs.impl.disable.cache", "true");
         conf.set("fs.hdfs.impl", "org.apache.hadoop.hdfs.DistributedFileSystem");

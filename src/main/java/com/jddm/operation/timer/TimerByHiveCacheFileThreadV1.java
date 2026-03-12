@@ -26,7 +26,7 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
         try {
             getIceBergHiveCacheFiles();
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            log.error("[TimerFlush] Timer Commit Cache File Exception : {}", e.getMessage(), e);
         }
     }
 

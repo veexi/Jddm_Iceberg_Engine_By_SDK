@@ -18,7 +18,6 @@ import com.jddm.operation.timer.TimerByHiveCacheFileThread;
 import com.jddm.operation.timer.TimerByHiveCacheFileThreadV1;
 import com.jddm.operation.timer.TimerByIcebergCompactFileThread;
 import com.jddm.thread.OperationTotalSyncByIceBergThreadPool;
-import com.jddm.utils.IcebergValidator;
 import com.jddm.utils.KerberosAuthUtil;
 import com.publics.cache.TableAllCacheInfo;
 import com.publics.common.ConstantFileInfoSet;
@@ -66,7 +65,8 @@ public class StartIcebergEngine {
     private final static String LOG_XML_PATH = "config/log4jConfig.xml";
     private static  String hiveFilePath = "hdfsFile";
     private static int totalSyncNO=1;
-    public static final String version = IcebergValidator.class.getPackage().getImplementationVersion();
+    public static final String version = StartIcebergEngine.class.getPackage().getImplementationVersion();
+
     /*** *** *** ***
      * @functionName（方法名称）: main
      * @description （方法说明）: 启动入口
@@ -293,7 +293,7 @@ private static boolean initializeServices() throws InitializationException {
         scheduledThreadPool = Executors.newScheduledThreadPool(6);
 
         scheduledThreadPool.scheduleAtFixedRate(
-                new TimerByHiveCacheFileThreadV1(), 5, 30, TimeUnit.SECONDS);
+                new TimerByHiveCacheFileThreadV1(), 5, 5, TimeUnit.SECONDS);
 
         GlobalConfInfo.reloadTableVoCalcMap.put(Constant.reloadKeyName, new AtomicInteger(0));
         scheduledThreadPool.scheduleAtFixedRate(
@@ -461,14 +461,14 @@ private static boolean initializeServices() throws InitializationException {
         }
         log.info("Iceberg version :: "+ org.apache.iceberg.Table.class.getPackage().getImplementationVersion());
         log.info("Validating engine connection to Iceberg source...");
-        IcebergValidator icebergValidator = new IcebergValidator();
+/*        IcebergValidator icebergValidator = new IcebergValidator();
         try {
             icebergValidator.validateTableOperations();
         }catch (Exception e){
             throw new RuntimeException("Iceberg connection validate failed",e);
         }finally {
             icebergValidator=null;
-        }
+        }*/
 
         log.info("Jddm Iceberg Engine started successfully.");
         log.info("...");
@@ -477,7 +477,7 @@ private static boolean initializeServices() throws InitializationException {
     public static String getBuildTimeString(){
         String returnTime = "";
         try (InputStream in =
-                     IcebergValidator.class.getClassLoader()
+                     StartIcebergEngine.class.getClassLoader()
                              .getResourceAsStream("META-INF/MANIFEST.MF")) {
             Manifest mf = new Manifest(in);
             String timestamp = mf.getMainAttributes()

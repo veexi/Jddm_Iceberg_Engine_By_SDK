@@ -8,8 +8,8 @@
     <artifactId>Jddm_Iceberg_Engine_By_SDK</artifactId>
     <version>1.0.0-RC1</version>
     <properties>
-        <maven.compiler.source>11</maven.compiler.source>
-        <maven.compiler.target>11</maven.compiler.target>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
     <build>
@@ -33,32 +33,32 @@
         <dependency>
             <groupId>org.apache.iceberg</groupId>
             <artifactId>iceberg-api</artifactId>
-            <version>1.7.2</version>
+            <version>1.6.1</version>
         </dependency>
         <dependency>
             <groupId>org.apache.iceberg</groupId>
             <artifactId>iceberg-core</artifactId>
-            <version>1.7.2</version>
+            <version>1.6.1</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.iceberg</groupId>
             <artifactId>iceberg-bundled-guava</artifactId>
-            <version>1.7.2</version>
+            <version>1.6.1</version>
             <scope>runtime</scope>
         </dependency>
         <!-- https://mvnrepository.com/artifact/org.apache.iceberg/iceberg-common -->
         <dependency>
             <groupId>org.apache.iceberg</groupId>
             <artifactId>iceberg-common</artifactId>
-            <version>1.7.2</version>
+            <version>1.6.1</version>
             <scope>runtime</scope>
         </dependency>
         <!-- https://mvnrepository.com/artifact/org.apache.iceberg/iceberg-hive-runtime -->
         <dependency>
             <groupId>org.apache.iceberg</groupId>
             <artifactId>iceberg-hive-runtime</artifactId>
-            <version>1.7.2</version>
+            <version>1.6.1</version>
         </dependency>
         <dependency>
             <groupId>MonitorModule</groupId>
@@ -79,21 +79,21 @@
             <artifactId>com.dsg.jddm.communication</artifactId>
             <version>1.0.0</version>
             <scope>system</scope>
-            <systemPath>${project.basedir}/lib/dsg-jddm-communication-1.0.0.jar</systemPath>
+            <systemPath>${project.basedir}/lib/com.dsg.jddm.communication.jar</systemPath>
         </dependency>
         <dependency>
             <groupId>Public-Operation</groupId>
             <artifactId>com.dsg.public.operation</artifactId>
             <version>1.0.0</version>
             <scope>system</scope>
-            <systemPath>${project.basedir}/lib/dsg-public-operation-1.0.0.jar</systemPath>
+            <systemPath>${project.basedir}/lib/com.dsg.public.operation.jar</systemPath>
         </dependency>
         <dependency>
             <groupId>Analysis</groupId>
             <artifactId>com.dsg.yxad.analysis</artifactId>
             <version>1.0.0</version>
             <scope>system</scope>
-            <systemPath>${project.basedir}/lib/dsg-yxad-analysis-1.0.0.jar</systemPath>
+            <systemPath>${project.basedir}/lib/com.dsg.yxad.analysis.jar</systemPath>
         </dependency>
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>

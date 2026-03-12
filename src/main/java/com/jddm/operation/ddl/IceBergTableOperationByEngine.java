@@ -14,10 +14,7 @@ import com.publics.common.ConstantPublic;
 import com.publics.conf.GlobalConfCommInfo;
 import com.publics.utils.FileUtils;
 import com.publics.vo.SocketReturnVo;
-import org.apache.iceberg.CatalogProperties;
-import org.apache.iceberg.PartitionSpec;
-import org.apache.iceberg.Schema;
-import org.apache.iceberg.Table;
+import org.apache.iceberg.*;
 import org.apache.iceberg.catalog.Namespace;
 import org.apache.iceberg.catalog.TableIdentifier;
 import org.apache.iceberg.hive.HiveCatalog;
@@ -95,6 +92,25 @@ public class IceBergTableOperationByEngine {
 		}
         List<String> pkNames = new ArrayList<>(pkColumnMap.keySet());
         GlobalSetConfInfo.TablePkColCacheMap.put(setTableKeyName, pkNames);
+        String partColName = ConstantPublic.setPartitionFlag ?
+                ConstantPublic.setTablePartitionColName.toLowerCase().trim() : null;
+        if (partColName != null && !partColName.isEmpty()) {
+            boolean partColExists = false;
+            for (TableColumnVo col : columnList) {
+                if (col.getColumnName().equalsIgnoreCase(partColName)) {
+                    partColExists = true;
+                    break;
+                }
+            }
+            if (!partColExists) {
+                log.warn("[DDL] table={} partition col '{}' not found, fallback unpartitioned",
+                        setTableKeyName, partColName);
+                partColName = null;
+            } else {
+                log.info("[DDL] table={} partition col='{}' found, will use identity partition",
+                        setTableKeyName, partColName);
+            }
+        }
 		if(!thisTableColMap.isEmpty()){
 			
 			TableColumnVo tableColumnVo=null;
@@ -149,30 +165,29 @@ public class IceBergTableOperationByEngine {
 			}
 
 
-			if(columnVo.isAddColFlag()) {
-				
-				if(ConstantPublic.setPartitionFlag){
-					if(columnVo.getColumnName().toLowerCase().equalsIgnoreCase(ConstantPublic.setTablePartitionColName)){
-						
-						log.info(" JddmEngine ######## Partition COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
-						continue;
-					}else {
-						log.info(" JddmEngine ######## Partition ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
-					}
-				}else {
-					log.info(" JddmEngine ################ ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
-				}
-				
-				if(columnVo.getColComment() !=null) {
-					addColumnInfoString.append("`"+columnVo.getColumnName().toLowerCase()+"` "+ ConstantColType.OraTypeMappingSet.ora_0x01.getHiveColType()+"  comment '"+columnVo.getColComment()+"',");
-				}else {
-					addColumnInfoString.append("`"+columnVo.getColumnName().toLowerCase()+"` "+ConstantColType.OraTypeMappingSet.ora_0x01.getHiveColType()+",");
-				}
-				
-				yloaderColumnList.add(columnVo);
-			}else {
-				operColumnList.add(columnVo);
-			}
+            if(columnVo.isAddColFlag()) {
+                if(ConstantPublic.setPartitionFlag){
+                    if(columnVo.getColumnName().toLowerCase().equalsIgnoreCase(ConstantPublic.setTablePartitionColName)){
+                        log.info(" JddmEngine ######## Partition COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
+                        yloaderColumnList.add(columnVo);
+                        continue;
+                    }else {
+                        log.info(" JddmEngine ######## Partition ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
+                    }
+                }else {
+                    log.info(" JddmEngine ################ ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
+                }
+
+                if(columnVo.getColComment() !=null) {
+                    addColumnInfoString.append("`"+columnVo.getColumnName().toLowerCase()+"` "+ ConstantColType.OraTypeMappingSet.ora_0x01.getHiveColType()+"  comment '"+columnVo.getColComment()+"',");
+                }else {
+                    addColumnInfoString.append("`"+columnVo.getColumnName().toLowerCase()+"` "+ConstantColType.OraTypeMappingSet.ora_0x01.getHiveColType()+",");
+                }
+
+                yloaderColumnList.add(columnVo);
+            }else {
+                operColumnList.add(columnVo);
+            }
 		}
 		
 		log.info(" JDDM_ICEBERG_HIVE_Engine List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
@@ -204,25 +219,18 @@ public class IceBergTableOperationByEngine {
 		
 		
 		for( TableColumnVo columnVo: operColumnList){
-			
-			if(ConstantPublic.setPartitionFlag){
-				if(!columnVo.getColumnName().toLowerCase().equalsIgnoreCase(ConstantPublic.setTablePartitionColName)){
-					columnNameString.append(columnVo.getColumnName().toLowerCase()+",");
-					//continue;
-				}else{
-					continue;
-				}
-				
-			}else{
-				if(!columnVo.getColumnName().toLowerCase().equalsIgnoreCase("busi_date")){
-					//log.info(" --- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
-					columnNameString.append(columnVo.getColumnName().toLowerCase()+",");
-					//continue;
-				}else{
-					continue;
-				}
-			}
-			
+
+            if(ConstantPublic.setPartitionFlag){
+                if(!columnVo.getColumnName().toLowerCase().equalsIgnoreCase(ConstantPublic.setTablePartitionColName)){
+                    columnNameString.append(columnVo.getColumnName().toLowerCase()+",");
+                }
+            }else{
+                if(!columnVo.getColumnName().toLowerCase().equalsIgnoreCase("busi_date")){
+                    columnNameString.append(columnVo.getColumnName().toLowerCase()+",");
+                }else{
+                    continue;
+                }
+            }
 			
 			Types.NestedField nestedField = null;
 
@@ -231,6 +239,8 @@ public class IceBergTableOperationByEngine {
 				log.info(" --reload[ALL FieldType]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
 
 			}
+            boolean isTransactionMode = "transaction".equals(Constant.icebergWriteMode);
+            boolean isPkCol = isTransactionMode && pkColumnMap.containsKey(columnVo.getColumnName().toLowerCase());
 			switch(columnVo.getColumnType()){
 
 				case 1:
@@ -254,8 +264,11 @@ public class IceBergTableOperationByEngine {
                     //log.info(" --reload(PG_varchar)->[FieldType.STRING]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
                     //Objects.requireNonNull(Types.StringType.get())
                     //log.info(" --reload[FieldType.STRING]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
-					nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-					iceBergTablefields.add(nestedField);
+
+                    nestedField = isPkCol
+                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                    iceBergTablefields.add(nestedField);
 					
 					break;
                 case 2:
@@ -267,33 +280,43 @@ public class IceBergTableOperationByEngine {
 							
 							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 1000);
 //							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(38, 18));
-							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-							iceBergTablefields.add(nestedField);
+                            nestedField = isPkCol
+                                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                            iceBergTablefields.add(nestedField);
 
 							break;
 						case 1100: //NUMBER(*, 0)
 							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 1100);
 //							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(Integer.parseInt(columnVo.getColumnLen()), 0));
-							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-			                iceBergTablefields.add(nestedField);
+                            nestedField = isPkCol
+                                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                            iceBergTablefields.add(nestedField);
 							break;
 						case 1200: //NUMBER(%d)
 							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 1200);
 							if (Integer.parseInt(columnVo.getColumnLen()) > 38) {
 //			                    nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(38, 0));
-								nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-			                    iceBergTablefields.add(nestedField);
+                                nestedField = isPkCol
+                                        ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                        : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                                iceBergTablefields.add(nestedField);
 			                } else {
 //			                    nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(Integer.parseInt(columnVo.getColumnLen()), 0));
-								nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-			                    iceBergTablefields.add(nestedField);
+                                nestedField = isPkCol
+                                        ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                        : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                                iceBergTablefields.add(nestedField);
 			                }
 							break;
 						case 3000: //NUMBER(%d,%d)
 							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 3000);
 							GlobalSetConfInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), Integer.parseInt(columnVo.getColPrecision()));
 //							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(Integer.parseInt(columnVo.getColumnLen()), Integer.parseInt(columnVo.getColPrecision())));
-							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DoubleType.get());
+                            nestedField = isPkCol
+                                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
 
 							iceBergTablefields.add(nestedField);
 							break;
@@ -301,18 +324,24 @@ public class IceBergTableOperationByEngine {
 							GlobalConfCommInfo.jddmEngineTypeByNumberColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(), 3100);
 							if (Integer.parseInt(columnVo.getColumnLen()) > 38) {
 //			                    nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(38, 0));
-								nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-								iceBergTablefields.add(nestedField);
+                                nestedField = isPkCol
+                                        ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                        : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                                iceBergTablefields.add(nestedField);
 			                } else {
 //			                    nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(Integer.parseInt(columnVo.getColumnLen()), 0));
-								nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-								iceBergTablefields.add(nestedField);
+                                nestedField = isPkCol
+                                        ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                        : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                                iceBergTablefields.add(nestedField);
 			                }
 							break;
 						default:
 //							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DecimalType.of(38, 18));
-							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-							iceBergTablefields.add(nestedField);
+                            nestedField = isPkCol
+                                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                            iceBergTablefields.add(nestedField);
 							break;
 					}
 					
@@ -320,14 +349,18 @@ public class IceBergTableOperationByEngine {
 					break;
 				case 181: //0xb5 --->TIMESTAMP 2012-12-12 12:12:12.123456789 +时区
                 case 180: //0xb4 --->TIMESTAMP 2012-12-12 12:12:12.123456789
-                    nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.TimestampType.withoutZone());
-					iceBergTablefields.add(nestedField);
+                    nestedField = isPkCol
+                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.TimestampType.withoutZone())
+                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.TimestampType.withoutZone());
+                    iceBergTablefields.add(nestedField);
 					break;
 
 				case 100: //BINARY_FLOAT
 				case 101: //BINARY_DOUBLE
-					nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DoubleType.get());
-					iceBergTablefields.add(nestedField);
+                    nestedField = isPkCol
+                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DoubleType.get())
+                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DoubleType.get());
+                    iceBergTablefields.add(nestedField);
 					break;
 				case 112: //CLOB 0x70
                 case 113: //BLOB 0x71
@@ -336,16 +369,22 @@ public class IceBergTableOperationByEngine {
 					switch(ConversionUtil.getIntFromBytes(columnVo.getSourceType())) {
 						case 5009: // bytes
 							GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(),columnVo.getColumnName().toLowerCase());
-							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-							iceBergTablefields.add(nestedField);
+                            nestedField = isPkCol
+                                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                            iceBergTablefields.add(nestedField);
 							break;
 						case 5019: //uuid
-							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-							iceBergTablefields.add(nestedField);
+                            nestedField = isPkCol
+                                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                            iceBergTablefields.add(nestedField);
 							break;
 						default:
-							nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-							iceBergTablefields.add(nestedField);
+                            nestedField = isPkCol
+                                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+                            iceBergTablefields.add(nestedField);
 							break;
 					}
 
@@ -355,9 +394,12 @@ public class IceBergTableOperationByEngine {
 
                 case 5001: //pg database int
 						//log.info(" --reload( PG_int )->[FieldType.BIGINT]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
-					nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.IntegerType.get());
-					iceBergTablefields.add(nestedField);
-					break;
+                    nestedField = isPkCol
+                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.IntegerType.get())
+                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.IntegerType.get());
+                    iceBergTablefields.add(nestedField);
+
+                    break;
                 default:
 						//log.info(" columnType ::"+columnVo.getColumnType());
 					log.info(" --reload columnType["+columnVo.getColumnType()+"]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
@@ -367,10 +409,13 @@ public class IceBergTableOperationByEngine {
 		
 		for(TableColumnVo columnVo: yloaderColumnList) {
 			Types.NestedField nestedField = null;
-			
+            boolean isTransactionMode = "transaction".equals(Constant.icebergWriteMode);
+            boolean isPkCol = isTransactionMode && pkColumnMap.containsKey(columnVo.getColumnName().toLowerCase());
 			GlobalConfCommInfo.jddmEngineTypeByYloaderColMap.put(setTableKeyName+"."+columnVo.getColumnName().toLowerCase(),columnVo.getColumnName().toLowerCase());
-			nestedField = Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
-			iceBergTablefields.add(nestedField);
+            nestedField = isPkCol
+                    ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                    : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
+            iceBergTablefields.add(nestedField);
 		}
 		
 		iceBergSchema = new Schema(iceBergTablefields);
@@ -398,21 +443,35 @@ public class IceBergTableOperationByEngine {
 			log.info(" ========== JDBC IceBerg DDL_CreateSQL :::"+tableIdentifier.toString());
             HiveCatalog catalog = new HiveCatalog();
             Configuration hadoopConf = KerberosAuthUtil.buildHadoopConf();
-            hadoopConf.addResource(new org.apache.hadoop.fs.Path("/dsg/wjl/Jddm_Iceberg_Engine_By_SDK/config/hive-site.xml"));
+            String dynamicHiveSitePath = Constant.basicWorkPath + java.io.File.separator + "config" + java.io.File.separator + "hive-site.xml";
+            hadoopConf.addResource(new org.apache.hadoop.fs.Path(dynamicHiveSitePath));
             catalog.setConf(hadoopConf);
             Map<String, String> properties = new HashMap<String, String>();
-			//	        properties.put(CatalogProperties.WAREHOUSE_LOCATION, "hdfs://10.0.0.47:8020");
-			properties.put(CatalogProperties.WAREHOUSE_LOCATION, Constant.fsDefaultInfo);
-			//	        properties.put(CatalogProperties.URI, "thrift://10.0.0.47:9083");
-			properties.put(CatalogProperties.URI, Constant.hiveMetastoreUris);
-	        properties.put(CatalogProperties.CATALOG_IMPL, "org.apache.iceberg.hive.HiveCatalog");
-			properties.put("format-version", "2");
-	        // 初始化catalog
-	        catalog.initialize("hive", properties);
-            log.info("------>>> fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo,Constant.hiveMetastoreUris);
-	        
-	        //spec = PartitionSpec.builderFor(GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName)).hour("event_time").build();
-	        spec = PartitionSpec.builderFor(GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName)).build();
+            properties.put(CatalogProperties.WAREHOUSE_LOCATION, Constant.fsDefaultInfo);
+            properties.put(CatalogProperties.URI, Constant.hiveMetastoreUris);
+            properties.put(CatalogProperties.CATALOG_IMPL, "org.apache.iceberg.hive.HiveCatalog");
+            properties.put("format-version", "2");
+// 有主键的表开启 merge-on-read，支持 equality delete
+
+            catalog.initialize("hive", properties);
+            log.info("------>>> fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo, Constant.hiveMetastoreUris);
+
+// PartitionSpec：有分区字段用 identity，否则无分区
+            if (partColName != null) {
+                try {
+                    spec = PartitionSpec.builderFor(GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName))
+                            .identity(partColName)
+                            .build();
+                    log.info("[DDL] table={} partition by identity col='{}'", setTableKeyName, partColName);
+                } catch (Exception e) {
+                    log.warn("[DDL] table={} partition spec build failed col='{}', fallback unpartitioned. err={}",
+                            setTableKeyName, partColName, e.getMessage());
+                    spec = PartitionSpec.unpartitioned();
+                }
+            } else {
+                spec = PartitionSpec.unpartitioned();
+                log.info("[DDL] table={} unpartitioned", setTableKeyName);
+            }
             Namespace ns = Namespace.of(tableInfoVo.getOwner().toLowerCase());
 
             //如果库不存在，则创建它
@@ -422,14 +481,24 @@ public class IceBergTableOperationByEngine {
             }
 			if(!catalog.tableExists(tableIdentifier)) {
 				properties.put("engine.hive.enabled", "true");
-
+                if (!pkNames.isEmpty() && "transaction".equals(Constant.icebergWriteMode)) {
+                    properties.put(TableProperties.DELETE_MODE, "merge-on-read");
+                    properties.put(TableProperties.UPDATE_MODE, "merge-on-read");
+                    properties.put(TableProperties.MERGE_MODE,  "merge-on-read");
+                    log.info("[DDL] table={} pk={} set merge-on-read", setTableKeyName, pkNames);
+                }
 				iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
 				GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
 			}else {
 				if(ConstantSet.jddmEngineDropTable){
 					catalog.dropTable(tableIdentifier);
 					properties.put("engine.hive.enabled", "true");
-
+                    if (!pkNames.isEmpty() && "transaction".equals(Constant.icebergWriteMode)) {
+                        properties.put(TableProperties.DELETE_MODE, "merge-on-read");
+                        properties.put(TableProperties.UPDATE_MODE, "merge-on-read");
+                        properties.put(TableProperties.MERGE_MODE,  "merge-on-read");
+                        log.info("[DDL] table={} pk={} set merge-on-read", setTableKeyName, pkNames);
+                    }
 					iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
 					GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
 				}else {

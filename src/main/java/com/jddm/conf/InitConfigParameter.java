@@ -128,21 +128,21 @@ public class InitConfigParameter {
                 parameterStrMap.put("ICEBERG_WRITE_MODE", Constant.icebergWriteMode);
             }
 
-            parameterStr = GlobalConfInfo.getConf().getValue("ENGINE_LOG_LEVEL");
+            parameterStr = GlobalConfInfo.getConf().getValue("LOG_LEVEL_TYPE");
             if (parameterStr != null && !parameterStr.equals("")) {
                 Constant.debugLogEnabled = "debug".equalsIgnoreCase(parameterStr.trim());
-                parameterStrMap.put("ENGINE_LOG_LEVEL", parameterStr.trim().toLowerCase());
+                parameterStrMap.put("LOG_LEVEL_TYPE", parameterStr.trim().toLowerCase());
             } else {
                 Constant.debugLogEnabled = false;
-                parameterStrMap.put("ENGINE_LOG_LEVEL", "info");
+                parameterStrMap.put("LOG_LEVEL_TYPE", "info");
             }
 
             parameterStr = GlobalConfInfo.getConf().getValue("HIVE_FILE_MODIFY_TIMES");
             if (parameterStr != null && !parameterStr.equals("")) {
-                Constant.compactIntervalSeconds = Integer.parseInt(parameterStr.trim());
-                parameterStrMap.put("HIVE_FILE_MODIFY_TIMES", Constant.compactIntervalSeconds);
+                Constant.hiveDiffTimers = Integer.parseInt(parameterStr.trim());
+                parameterStrMap.put("HIVE_FILE_MODIFY_TIMES", Constant.hiveDiffTimers);
             } else {
-                parameterStrMap.put("HIVE_FILE_MODIFY_TIMES", Constant.compactIntervalSeconds);
+                parameterStrMap.put("HIVE_FILE_MODIFY_TIMES", Constant.hiveDiffTimers);
             }
 
             parameterStr = GlobalConfInfo.getConf().getValue("HIVE_FILE_CACHE_SIZE");
@@ -173,7 +173,7 @@ public class InitConfigParameter {
             if (Constant.kerberosEnabled) {
                 // --- Principal（必填）---
                 parameterStr = GlobalConfInfo.getConf().getValue("KERBEROS_USER_PRINCIPAL");
-                if (parameterStr == null || parameterStr.isBlank()) {
+                if (parameterStr == null || parameterStr.equals("")) {
                     log.error(" Engine_Authentication_Mode=Kerberos but KERBEROS_USER_PRINCIPAL is not set !");
                     System.exit(0);
                 }
@@ -181,7 +181,7 @@ public class InitConfigParameter {
                 parameterStrMap.put("KERBEROS_USER_PRINCIPAL", Constant.kerberosPrincipal);
 
                 parameterStr = GlobalConfInfo.getConf().getValue("KERBEROS_USER_KEYTAB_FILE");
-                if (parameterStr == null || parameterStr.isBlank()) {
+                if (parameterStr == null || parameterStr.equals("")) {
                     log.error(" Engine_Authentication_Mode=Kerberos but KERBEROS_USER_KEYTAB_FILE is not set !");
                     System.exit(0);
                 }
@@ -194,13 +194,13 @@ public class InitConfigParameter {
 
                 // --- NameNode/Service Principal（选填）---
                 parameterStr = GlobalConfInfo.getConf().getValue("ZK_SECURITY_PRINCIPAL_INSTANCE");
-                if (parameterStr != null && !parameterStr.isBlank()) {
+                if (parameterStr != null && !parameterStr.equals("")) {
                     Constant.hdfsNamenodePrincipal = parameterStr.trim();
                     parameterStrMap.put("ZK_SECURITY_PRINCIPAL_INSTANCE", Constant.hdfsNamenodePrincipal);
                 }
 
                 parameterStr = GlobalConfInfo.getConf().getValue("KERBEROS_KRB5_CONF_FILE");
-                if (parameterStr != null && !parameterStr.isBlank()) {
+                if (parameterStr != null && !parameterStr.equals("")) {
                     String krb5Path = parameterStr.trim();
                     if (!new File(krb5Path).isAbsolute()) {
                         krb5Path = Constant.basicWorkPath + File.separator + "config" + File.separator + krb5Path;
@@ -209,7 +209,7 @@ public class InitConfigParameter {
                     parameterStrMap.put("KERBEROS_KRB5_CONF_FILE", Constant.krb5ConfFilePath);
                 }
                 parameterStr = GlobalConfInfo.getConf().getValue("HIVE_METASTORE_KERBEROS_PRINCIPAL");
-                if (parameterStr == null || parameterStr.isBlank()) {
+                if (parameterStr == null || parameterStr.equals("")) {
                     log.error(" Engine_Authentication_Mode=Kerberos but HIVE_METASTORE_KERBEROS_PRINCIPAL is not set !");
                     System.exit(0);
                 }

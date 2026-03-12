@@ -99,13 +99,17 @@ public class TimerByIcebergCompactFileThread implements Runnable {
 
         DataFile newDataFile = IceBergBatchOperationHandler
                 .writeDataFile(table, allRecords, tableKey);
-
-        table.newRewrite()
-                .rewriteFiles(filesToRemove, Collections.singleton(newDataFile))
-                .commit();
-
-        log.info("[Compact] table={} rewrite ok: {} files -> 1 file, rows={}, newSize={} bytes",
-                tableKey, filesToRemove.size(), allRecords.size(), newDataFile.fileSizeInBytes());
+        try {
+            table.newRewrite()
+                    .rewriteFiles(filesToRemove, Collections.singleton(newDataFile))
+                    .commit();
+            log.info("[Compact] table={} rewrite ok: {} files -> 1 file, rows={}, newSize={} bytes",
+                    tableKey, filesToRemove.size(), allRecords.size(), newDataFile.fileSizeInBytes());
+        } catch (org.apache.iceberg.exceptions.ValidationException ve) {
+            log.warn("[Compact] table={} skip, concurrent delete conflict, retry next cycle. msg={}",
+                    tableKey, ve.getMessage());
+            return;
+        }
 
         table.expireSnapshots()
                 .expireOlderThan(System.currentTimeMillis() - 24L * 3600 * 1000)

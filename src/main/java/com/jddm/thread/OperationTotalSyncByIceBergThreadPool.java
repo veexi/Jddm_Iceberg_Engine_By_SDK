@@ -112,9 +112,16 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         .put(schemaKeyByParquetThreadID, System.currentTimeMillis());
 
                 int currentCount = GlobalConfInfo.engineAtomicByTableKeyMap
-                        .get(schemaKeyByParquetThreadID).get();
-                if (currentCount % Constant.writeCountNoToHiveFile == 0) {
+                        .computeIfAbsent(schemaKeyByParquetThreadID, k -> new AtomicInteger(0))
+                        .addAndGet(rowsNum);
+
+                if (currentCount >= Constant.writeCountNoToHiveFile) {
+                    log.info("[IcebergPool] count rows ::  "+currentCount+">="+Constant.writeCountNoToHiveFile);
                     triggerFlush(schemaKeyByParquet, schemaKeyByParquetThreadID, packageReturnVo, currentCount);
+                    // 提交后立刻重置该线程的计数器
+//                    GlobalConfInfo.engineAtomicByTableKeyMap.get(schemaKeyByParquetThreadID).set(0);
+                }else {
+                    log.info("[IcebergPool] count rows ::  "+currentCount+"<"+Constant.writeCountNoToHiveFile);
                 }
 
             } catch (Exception ex) {
@@ -203,6 +210,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 }
                 switch (opType) {
                     case "I":
+                        if ((columnInfo.getCflag() & 1) == 1) {
+                            break;
+                        }
                         fillRecord(newRecord, columnInfo, colNameByNumberKey, "I");
                         hasNewData = true;
                         break;
@@ -260,7 +270,24 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             case "U":
                 if (isTransaction && hasPk) {
                     if (hasOldData && hasNewData) {
-                        // 标准双镜像 UPDATE
+                        // 判断主键是否发生了变更
+                        List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
+                        String oldPkString = extractRecordKey(oldRecord, pkNames);
+                        String newPkString = extractRecordKey(newRecord, pkNames);
+
+                        if (!oldPkString.equals(newPkString)) {
+                            if (Constant.debugLogEnabled) {
+                                log.info("[IceBergPool] UPDATE changed PK: {} -> {}, splitting into DELETE + INSERT",
+                                        oldPkString, newPkString);
+                            }
+                            // 主键发生变更，拆分为先删后插
+                            List<RowOperation> splitOps = new ArrayList<>(2);
+                            splitOps.add(RowOperation.delete(oldRecord, offset));
+                            splitOps.add(RowOperation.insert(newRecord, offset + 1));
+                            return splitOps;
+                        }
+
+                        // 主键未变更，标准双镜像 UPDATE
                         return Collections.singletonList(RowOperation.update(oldRecord, newRecord, offset));
                     }
                     if (!hasOldData && hasNewData) {
@@ -470,8 +497,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                                 record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
                                 break;
                             case 3000:
-                                record.setField(columnInfo.getColumnName().toLowerCase(),
-                                        Double.parseDouble(columnInfo.getColumnValue()));
+                                // Iceberg 字段已是 StringType，直接 set String
+                                record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
                                 break;
                             case 3100:
                                 record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());

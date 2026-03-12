@@ -26,6 +26,8 @@ import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
+import static com.jddm.boot.StartIcebergEngine.version;
+
 /**
  * className: IcebergValidator<br>
  * description: <br>
@@ -37,7 +39,6 @@ public class IcebergValidator {
     public static HiveCatalog catalog = new HiveCatalog();
     public static Map<String, String> properties = new HashMap<String, String>();
     public static Schema testSchema = null;
-    public static final String version = IcebergValidator.class.getPackage().getImplementationVersion();
 
     public  void validateTableOperations() throws Exception {
         Table table = null;
@@ -152,7 +153,7 @@ public class IcebergValidator {
      ***/
     public static void initCatalog(){
 
-        Configuration conf = new Configuration();
+        Configuration conf = KerberosAuthUtil.buildHadoopConf();
         catalog.setConf(conf);
 
         //	        properties.put(CatalogProperties.WAREHOUSE_LOCATION, "hdfs://10.0.0.47:8020");

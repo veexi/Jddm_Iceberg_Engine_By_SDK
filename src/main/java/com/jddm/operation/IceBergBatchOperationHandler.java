@@ -56,31 +56,38 @@ public class IceBergBatchOperationHandler {
 
         if ("transaction".equals(Constant.icebergWriteMode)) {
             List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
-            log.info("[IceBergBatch][TX] flush start table={} ops={} pkNames={}",
-                    tableKeyName, allOps.size(), pkNames);
+            log.info("[IceBergBatch][TX] flush start table={} ops={} pkNames={}", tableKeyName, allOps.size(), pkNames);
             MergeResult mergeResult = mergeByPrimaryKey(allOps, pkNames, iceBergTable);
-            log.info("[IceBergBatch][TX] merge done table={} insertCount={} deleteCount={} insertKeys={} deleteKeys={}",
-                    tableKeyName,
-                    mergeResult.insertRecords.size(),
-                    mergeResult.deleteRecords.size(),
-                    summarizeRecords(mergeResult.insertRecords, pkNames, 10),
-                    summarizeRecords(mergeResult.deleteRecords, pkNames, 10));
-            DataFile dataFile = mergeResult.insertRecords.isEmpty() ? null
-                    : writeDataFile(iceBergTable, mergeResult.insertRecords, tableKeyName);
-            DeleteFile deleteFile = null;
+            log.info("[IceBergBatch][TX] merge done table={} insertCount={} deleteCount={}", tableKeyName, mergeResult.insertRecords.size(), mergeResult.deleteRecords.size());
+
+            // 1. Insert 也要用支持分区写入的方法，防止报 Partition must not be null
+            List<DataFile> dataFiles = mergeResult.insertRecords.isEmpty() ? null
+                    : writePartitionedDataFiles(iceBergTable, mergeResult.insertRecords, tableKeyName);
+
+            List<DeleteFile> deleteFiles = null;
             if (!mergeResult.deleteRecords.isEmpty()) {
                 List<Integer> equalityFieldIds = resolveEqualityFieldIds(iceBergTable, pkNames);
-                deleteFile = writeDeleteFile(iceBergTable, mergeResult.deleteRecords, equalityFieldIds);
+                // 确保你这里的 writeDeleteFile 是我上个回答里改过的支持多分区的版本
+                deleteFiles = writeDeleteFile(iceBergTable, mergeResult.deleteRecords, equalityFieldIds);
             }
-            commitRowDelta(iceBergTable, dataFile, deleteFile, tableKeyName);
-            log.info("[IceBergBatch] transaction commit ok key={} inserts={} deletes={}",
-                    tableKeyName, mergeResult.insertRecords.size(), mergeResult.deleteRecords.size());
+
+            // 2. 调用修改后的 commitRowDelta，保留底层冲突重试机制
+            commitRowDelta(iceBergTable, dataFiles, deleteFiles, tableKeyName);
+
+            log.info("[IceBergBatch] transaction commit ok key={} inserts={} deletes={}", tableKeyName, mergeResult.insertRecords.size(), mergeResult.deleteRecords.size());
         } else {
             List<GenericRecord> recordsToWrite = allOps.stream()
                     .map(op -> op.getNewRecord() != null ? op.getNewRecord() : op.getOldRecord())
                     .collect(Collectors.toList());
-            DataFile dataFile = writeDataFile(iceBergTable, recordsToWrite, tableKeyName);
-            iceBergTable.newAppend().appendFile(dataFile).commit();
+
+            List<DataFile> dataFiles = writePartitionedDataFiles(iceBergTable, recordsToWrite, tableKeyName);
+
+            AppendFiles appendFiles = iceBergTable.newAppend();
+            for (DataFile df : dataFiles) {
+                appendFiles.appendFile(df);
+            }
+            appendFiles.commit();
+
             log.info("[IceBergBatch] trajectory commit ok key={} rows={}", tableKeyName, allOps.size());
         }
     }
@@ -257,7 +264,7 @@ public class IceBergBatchOperationHandler {
                 .build();
     }
 
-    private static DeleteFile writeDeleteFile(Table iceBergTable,
+/**    private static DeleteFile writeDeleteFile(Table iceBergTable,
                                               List<GenericRecord> deleteRecords,
                                               List<Integer> equalityFieldIds) throws Exception {
         String deletePath = iceBergTable.location() + "/delete/eq_del_" + UUID.randomUUID();
@@ -278,8 +285,58 @@ public class IceBergBatchOperationHandler {
 
         log.debug("[IceBergBatch] DeleteFile written path={} rows={}", deletePath, deleteRecords.size());
         return deleteWriter.result().deleteFiles().get(0);
+    }*/
+private static List<DeleteFile> writeDeleteFile(Table iceBergTable,
+                                                List<GenericRecord> deleteRecords,
+                                                List<Integer> equalityFieldIds) throws Exception {
+    if (deleteRecords == null || deleteRecords.isEmpty()) return Collections.emptyList();
+
+    PartitionSpec spec = iceBergTable.spec();
+    boolean isPartitioned = spec.isPartitioned();
+
+    // 1. 将删除记录按分区键分组
+    Map<PartitionKey, List<GenericRecord>> partitionMap = new HashMap<>();
+    for (GenericRecord record : deleteRecords) {
+        PartitionKey pKey = new PartitionKey(spec, iceBergTable.schema());
+        if (isPartitioned) {
+            pKey.partition(record); // 提取该行的分区值
+        }
+        partitionMap.computeIfAbsent(pKey.copy(), k -> new ArrayList<>()).add(record);
     }
 
+    List<DeleteFile> deleteFiles = new ArrayList<>();
+
+    // 2. 遍历每个分区，分别创建对应的 DeleteWriter
+    for (Map.Entry<PartitionKey, List<GenericRecord>> entry : partitionMap.entrySet()) {
+        String deletePath = iceBergTable.location() + "/delete/eq_del_" + UUID.randomUUID() + ".parquet";
+        OutputFile deleteOut = iceBergTable.io().newOutputFile(deletePath);
+
+        Schema realSchema = new Schema(entry.getValue().get(0).struct().fields());
+
+        Parquet.DeleteWriteBuilder builder = Parquet.writeDeletes(deleteOut)
+                .forTable(iceBergTable)
+                .rowSchema(realSchema) // 显式覆盖真实的记录 Schema
+                .createWriterFunc(GenericParquetWriter::buildWriter)
+                .equalityFieldIds(equalityFieldIds);
+
+        // 【核心修复】：必须向 Builder 显式绑定当前的分区信息
+        if (isPartitioned) {
+            builder.withSpec(spec).withPartition(entry.getKey());
+        }
+
+        EqualityDeleteWriter<GenericRecord> deleteWriter = builder.buildEqualityWriter();
+        try {
+            for (GenericRecord rec : entry.getValue()) {
+                deleteWriter.write(rec);
+            }
+        } finally {
+            deleteWriter.close();
+        }
+        deleteFiles.add(deleteWriter.result().deleteFiles().get(0));
+    }
+
+    return deleteFiles;
+}
     public static void flushAllThreadsForTable(String tableKeyName) throws Exception {
         List<RowOperation> allOps = new ArrayList<>();
         List<String> keysToRemove = new ArrayList<>();
@@ -306,16 +363,18 @@ public class IceBergBatchOperationHandler {
         flushBatch(tableKeyName, tableKeyName, allOps);
 
         // 只清 generic cache 和 timer，OpsMap 本身不删（队列留着继续接收新数据）
+// 只清 generic cache 和 timer，OpsMap 本身不删（队列留着继续接收新数据）
         keysToRemove.forEach(k -> {
             GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(k);
             GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(k);
+            // 新增：将所有被抽干数据的线程计数器一并移除，防止它们产生误判
+            GlobalConfInfo.engineAtomicByTableKeyMap.remove(k);
         });
     }
     private static void commitRowDelta(Table iceBergTable,
-                                       DataFile dataFile,
-                                       DeleteFile deleteFile,
+                                       List<DataFile> dataFiles,
+                                       List<DeleteFile> deleteFiles,
                                        String logKey) {
-
         int maxRetry = 3;
         int attempt  = 0;
 
@@ -323,32 +382,27 @@ public class IceBergBatchOperationHandler {
             attempt++;
             try {
                 iceBergTable.refresh();
-
                 RowDelta rowDelta = iceBergTable.newRowDelta();
 
-                if (dataFile != null) {
-                    rowDelta.addRows(dataFile);
+                if (dataFiles != null) {
+                    for (DataFile df : dataFiles) {
+                        rowDelta.addRows(df);
+                    }
                 }
-                if (deleteFile != null) {
-                    rowDelta.addDeletes(deleteFile);
+                if (deleteFiles != null) {
+                    for (DeleteFile df : deleteFiles) {
+                        rowDelta.addDeletes(df);
+                    }
                 }
 
                 rowDelta.commit();
-
-                log.info("[IceBergBatch] commit ok key={} attempt={} hasInsert={} hasDelete={}",
-                        logKey, attempt, dataFile != null, deleteFile != null);
+                log.info("[IceBergBatch] commit ok key={} attempt={}", logKey, attempt);
                 return;
 
             } catch (org.apache.iceberg.exceptions.CommitFailedException cfe) {
-                log.warn("[IceBergBatch] commit conflict retry key={} attempt={}/{} error={}",
-                        logKey, attempt, maxRetry, cfe.getMessage());
-                if (attempt >= maxRetry) {
-                    throw new RuntimeException("[IceBergBatch] commit retry failed key=" + logKey, cfe);
-                }
-                try { Thread.sleep(200L * attempt); } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-
+                log.warn("[IceBergBatch] commit conflict retry key={} attempt={}/{} error={}", logKey, attempt, maxRetry, cfe.getMessage());
+                if (attempt >= maxRetry) throw new RuntimeException("[IceBergBatch] commit retry failed key=" + logKey, cfe);
+                try { Thread.sleep(200L * attempt); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
             } catch (org.apache.iceberg.exceptions.ValidationException ve) {
                 log.error("[IceBergBatch] validation failed key={} error={}", logKey, ve.getMessage());
                 throw new RuntimeException("[IceBergBatch] ValidationException. key=" + logKey, ve);
@@ -486,5 +540,52 @@ public class IceBergBatchOperationHandler {
             this.insertRecords = insertRecords;
             this.deleteRecords = deleteRecords;
         }
+    }
+    public static List<DataFile> writePartitionedDataFiles(Table table, List<GenericRecord> records, String tableKeyName) throws Exception {
+        if (records == null || records.isEmpty()) return Collections.emptyList();
+
+        PartitionSpec spec = table.spec();
+        boolean isPartitioned = spec.isPartitioned();
+        // 核心：按分区键对记录进行分组
+        Map<PartitionKey, List<GenericRecord>> partitionMap = new HashMap<>();
+        for (GenericRecord record : records) {
+            PartitionKey pKey = new PartitionKey(spec, table.schema());
+            if (isPartitioned) {
+                pKey.partition(record);
+            }
+            partitionMap.computeIfAbsent(pKey.copy(), k -> new ArrayList<>()).add(record);
+        }
+
+        List<DataFile> dataFiles = new ArrayList<>();
+        for (Map.Entry<PartitionKey, List<GenericRecord>> entry : partitionMap.entrySet()) {
+            OutputFile outputFile = table.io().newOutputFile(
+                    new Path(table.location(), "data/" + tableKeyName.replace(".", "/")
+                            + "/" + UUID.randomUUID() + ".parquet").toString());
+
+            // 注意：这里也使用了 new Schema() 来保证列数绝对对齐，避免你之前遇到的 ArrayIndexOutOfBoundsException
+            FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                    .schema(new Schema(entry.getValue().get(0).struct().fields()))
+                    .createWriterFunc(GenericParquetWriter::buildWriter)
+                    .build();
+
+            try {
+                appender.addAll(entry.getValue());
+            } finally {
+                // 核心修复：必须先彻底关闭写入流，HDFS 上的文件才真正可见
+                appender.close();
+            }
+
+            // 关闭流之后，再去读取文件状态和 metrics
+            DataFiles.Builder builder = DataFiles.builder(spec)
+                    .withInputFile(outputFile.toInputFile())
+                    .withMetrics(appender.metrics())
+                    .withFormat(FileFormat.PARQUET);
+
+            if (isPartitioned) {
+                builder.withPartition(entry.getKey());
+            }
+            dataFiles.add(builder.build());
+        }
+        return dataFiles;
     }
 }
