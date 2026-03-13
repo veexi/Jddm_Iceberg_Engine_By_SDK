@@ -80,6 +80,9 @@ public class KerberosAuthUtil {
 
         conf.set("fs.hdfs.impl.disable.cache", "true");
         conf.set("fs.hdfs.impl", "org.apache.hadoop.hdfs.DistributedFileSystem");
+        
+        // 核心修正 4：清空 credential provider path，避免 core-site.xml 配置了失效的 jceks 路径导致 LdapGroupsMapping 抛出 IOException
+        conf.unset("hadoop.security.credential.provider.path");
 
         log.info("[Kerberos] HadoopConf loaded from local path: {}", configPath);
         return conf;

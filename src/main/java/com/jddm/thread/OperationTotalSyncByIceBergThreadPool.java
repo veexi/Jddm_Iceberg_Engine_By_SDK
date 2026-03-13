@@ -1,6 +1,6 @@
 package com.jddm.thread;
 
-import com.dsg.analysis.utils.ConversionUtil;
+
 import com.dsg.analysis.vo.PackageReturnVo;
 import com.dsg.analysis.vo.Udb_BcolumnVo;
 import com.jddm.common.Constant;
@@ -10,13 +10,12 @@ import com.jddm.vo.RowOperation;
 import com.jddm.operation.IceBergBatchOperationHandler;
 import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
-import com.publics.conf.GlobalConfCommInfo;
+
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+
 import java.util.*;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -70,49 +69,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         + "." + packageReturnVo.getTableName().toLowerCase();
                 schemaKeyByParquetThreadID = schemaKeyByParquet + "." + threadID;
 
-                // DEBUG 模式：逐列打印原始 CDC 数据
-                if (Constant.debugLogEnabled) {
-                    String rawOpType = packageReturnVo.getOperationType().toUpperCase();
-                    String cdcFileNo = packageReturnVo.getFileNo();
-
-                    // 快速路径（M/U + rowsNum==2）：不读 merger 列，真实类型直接是 U
-                    boolean isFastPath = ("U".equals(rawOpType) || "M".equals(rawOpType)) && rowsNum == 2;
-
-                    log.info("[IceBergPool][tid={}] ========== CDC Packet Info [batch={}] [fileNo={}] [table={}] [rawOp={}] ==========", Thread.currentThread().getId(), pktSeq, cdcFileNo, schemaKeyByParquet, rawOpType);
-                    log.info("[IceBergPool][tid={}] pktSeq={} fileNo={} table={} rawOp={} fastPath={} rows={} cols={}", Thread.currentThread().getId(), pktSeq, cdcFileNo, schemaKeyByParquet, rawOpType, isFastPath, rowsNum, columnsNum);
-
-                    for (int rowNo = 0; rowNo < rowsNum; rowNo++) {
-                        // 先扫一遍该行，找出真实 opType
-                        String resolvedOp = isFastPath ? "U" : rawOpType;
-                        if (!isFastPath) {
-                            for (int colNo = 0; colNo < columnsNum; colNo++) {
-                                Udb_BcolumnVo scanCol = rowUdbColumnMap.get(rowNo + "-" + colNo);
-                                if (scanCol != null && scanCol.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
-                                    String mergerVal = scanCol.getColumnValue() == null ? "" : scanCol.getColumnValue().toUpperCase();
-                                    switch (mergerVal) {
-                                        case "I":  resolvedOp = "I"; break;
-                                        case "U": case "UA": case "UB": resolvedOp = "U"; break;
-                                        case "D":  resolvedOp = "D"; break;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-
-                        // 按真实 opType 过滤后输出
-                        for (int colNo = 0; colNo < columnsNum; colNo++) {
-                            Udb_BcolumnVo col = rowUdbColumnMap.get(rowNo + "-" + colNo);
-                            if (col == null) continue;
-                            // merger_jddm_oper_type 是控制列，不是数据列，跳过
-                            if (col.getColumnName().equals(ConstantPubSet.MergerColKeyName)) continue;
-                            // INSERT 无 before-image，cflag&1==1 的字段无效，过滤
-                            if ("I".equals(resolvedOp) && (col.getCflag() & 1) == 1) continue;
-
-                            log.info("[tid={}]  bfrc={}-{}-{} | table={} | Op={} | name={} | value={} | cflag={}", Thread.currentThread().getId(), pktSeq, cdcFileNo, rowNo + "-" + colNo , schemaKeyByParquet, resolvedOp, col.getColumnName(), col.getColumnValue(), col.getCflag());
-                        }
-                    }
-                    log.info("[IceBergPool][tid={}] ========== End Packet Info [batch={}] [fileNo={}] [table={}] ==========", Thread.currentThread().getId(), pktSeq, cdcFileNo, schemaKeyByParquet);
-                }
+// Debug logs for columns have been integrated into the main parsing loop below to prevent OOM
 
                 if (GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet) == null
                         || !GlobalSetConfInfo.IceBergCacheTableMap.containsKey(schemaKeyByParquet)) {
@@ -131,7 +88,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         opType, rowsNum, columnsNum, rowUdbColumnMap,
                         schemaKeyByParquet, schemaKeyByParquetThreadID, colNameByNumberKey,
                         pktSeq);
-                log.info("[IceBergPool][tid={}] pktSeq={} table={} op={} parsedOps={}{}", Thread.currentThread().getId(), pktSeq, schemaKeyByParquet, opType, opsBuffer.size(), Constant.debugLogEnabled ? " opDetails=" + summarizeOps(opsBuffer, schemaKeyByParquet, 10) : "");
+                log.info("[IceBergPool][tid={}] pktSeq={} table={} op={} parsedOps={}", Thread.currentThread().getId(), pktSeq, schemaKeyByParquet, opType, opsBuffer.size());
+                if (Constant.debugLogEnabled) {
+                    log.info("[IceBergPool][tid={}] pktSeq={} opDetails={}", Thread.currentThread().getId(), pktSeq, summarizeOps(opsBuffer, schemaKeyByParquet, 10));
+                }
 
                 GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap
                         .get(schemaKeyByParquetThreadID)
@@ -177,35 +137,6 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         List<RowOperation> result = new ArrayList<>(rowsNum);
         long baseOffset = pktSeq * 1_000_000L;
 
-        if (("U".equals(opType) || "M".equals(opType)) && rowsNum == 2) {
-            GenericRecord newRecord = GenericRecord.create(
-                    GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-            GenericRecord oldRecord = GenericRecord.create(
-                    GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-            boolean hasNew = false, hasOld = false;
-            for (int rowNo = 0; rowNo < 2; rowNo++) {
-                for (int colNo = 0; colNo < columnsNum; colNo++) {
-                    Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(rowNo + "-" + colNo);
-                    colNameByNumberKey = schemaKeyByParquet + "." + columnInfo.getColumnName().toLowerCase();
-                    if (columnInfo.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
-                        continue;
-                    }
-                    if ((columnInfo.getCflag() & 1) == 1) {
-                        fillRecord(oldRecord, columnInfo, colNameByNumberKey, "I");
-                        hasOld = true;
-                    } else {
-                        fillRecord(newRecord, columnInfo, colNameByNumberKey, "I");
-                        hasNew = true;
-                    }
-                }
-            }
-            if (hasNew && hasOld) {
-                List<RowOperation> ops = buildOperation("U", newRecord, oldRecord, true, true, baseOffset, schemaKeyByParquet);
-                if (ops != null) result.addAll(ops);
-                return result;
-            }
-        }
-
         for (int rowNo = 0; rowNo < rowsNum; rowNo++) {
 
             GenericRecord newRecord = GenericRecord.create(
@@ -215,6 +146,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
             boolean hasNewData = false;
             boolean hasOldData = false;
+            int mergerColLimit = columnsNum;  // merge I/D 只处理前半列
 
             for (int colNo = 0; colNo < columnsNum; colNo++) {
                 Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(rowNo + "-" + colNo);
@@ -225,6 +157,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
                         case "I":
                             opType="I";
+                            mergerColLimit = columnsNum / 2;
                             break;
                         case "U":
                         case "UA":
@@ -233,9 +166,21 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                             break;
                         case "D":
                             opType="D";
+                             mergerColLimit = columnsNum / 2;
                             break;
                     }
                     continue;
+                }
+                // merge模式下 I/D 只有前半列有效数据，跳过后半空列
+                if (colNo > mergerColLimit) {
+                    continue;
+                }
+                
+                // 将原本独立的 Debug 打印移入主循环，减少 OOM 风险和性能开销
+                if (Constant.debugLogEnabled) {
+                    log.info("[IceBergPool][tid={}] table={} op={} row={} colName={} colValue={} cflag={}",
+                            Thread.currentThread().getId(), schemaKeyByParquet, opType, rowNo,
+                            columnInfo.getColumnName(), columnInfo.getColumnValue(), columnInfo.getCflag());
                 }
                 switch (opType) {
                     case "I":
@@ -247,7 +192,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         break;
 
                     case "U":
-                        if ((columnInfo.getCflag() & 1) == 1) {
+                        if ((columnInfo.getCflag() & 1) > 0) {
                             fillRecord(oldRecord, columnInfo, colNameByNumberKey, "I");
                             hasOldData = true;
                         } else {
@@ -257,15 +202,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         break;
 
                     case "D":
-                        // DELETE操作：cflag=1或5表示前镜像(old)，其他表示后镜像(new)
-                        // 对于DELETE，需要同时填充oldRecord和newRecord以保留主键信息
-                        if ((columnInfo.getCflag() & 1) == 1) {
-                            fillRecord(oldRecord, columnInfo, colNameByNumberKey, "I");
-                            hasOldData = true;
-                        } else {
-                            fillRecord(newRecord, columnInfo, colNameByNumberKey, "I");
-                            hasNewData = true;
-                        }
+                        // DELETE操作：强制全量放入 oldRecord
+                        fillRecord(oldRecord, columnInfo, colNameByNumberKey, "I");
+                        hasOldData = true;
                         break;
                 }
             }
@@ -502,67 +441,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                             String colNameByNumberKey,
                             String opType) {
         try {
-            if (GlobalConfCommInfo.jddmEngineTypeByYloaderColMap.containsKey(colNameByNumberKey)) {
-                if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-                    record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-                }
-                return;
-            }
-
-            switch (columnInfo.getColTypeArr()[1]) {
-
-                case 0x02: // NUMBER
-                    if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
-                        record.setField(columnInfo.getColumnName().toLowerCase(), null);
-                    } else if (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.containsKey(colNameByNumberKey)) {
-                        switch (GlobalConfCommInfo.jddmEngineTypeByNumberColMap.get(colNameByNumberKey)) {
-                            case 1000: case 1100: case 1200:
-                                record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-                                break;
-                            case 3000:
-                                // Iceberg 字段已是 StringType，直接 set String
-                                record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-                                break;
-                            case 3100:
-                                record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-                                break;
-                        }
-                    }
-                    break;
-
-                case -75: case -76: // TIMESTAMP
-                    if (columnInfo.getColumnValue() == null || columnInfo.getColumnValue().equals("")) {
-                        record.setField(columnInfo.getColumnName().toLowerCase(), null);
-                    } else {
-                        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
-                        record.setField(columnInfo.getColumnName().toLowerCase(),
-                                LocalDateTime.parse(columnInfo.getColumnValue(), fmt));
-                    }
-                    break;
-
-                case 0x64: case 0x65: // Binary_Float / Binary_Double
-                    if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-                        record.setField(columnInfo.getColumnName().toLowerCase(),
-                                Double.parseDouble(columnInfo.getColumnValue()));
-                    }
-                    break;
-
-                case 0x70: case 0x71:
-                    if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-                        if (GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.containsKey(colNameByNumberKey)) {
-                            record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-                        } else {
-                            record.setField(columnInfo.getColumnName().toLowerCase(),
-                                    new String(ConversionUtil.hexStringsToBytes(columnInfo.getColumnValue())));
-                        }
-                    }
-                    break;
-
-                default:
-                    if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
-                        record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
-                    }
-                    break;
+            // 所有字段统一按 String 写入，不再做类型转换
+            if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().equals("")) {
+                record.setField(columnInfo.getColumnName().toLowerCase(), columnInfo.getColumnValue());
             }
         } catch (Exception e) {
             log.warn("[IceBergPool][tid={}] fillRecord failed col={} val={} err={}", Thread.currentThread().getId(), columnInfo.getColumnName(), columnInfo.getColumnValue(), e.getMessage());

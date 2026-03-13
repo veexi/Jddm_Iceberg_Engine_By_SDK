@@ -350,16 +350,16 @@ public class IceBergTableOperationByEngine {
 				case 181: //0xb5 --->TIMESTAMP 2012-12-12 12:12:12.123456789 +时区
                 case 180: //0xb4 --->TIMESTAMP 2012-12-12 12:12:12.123456789
                     nestedField = isPkCol
-                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.TimestampType.withoutZone())
-                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.TimestampType.withoutZone());
+                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
                     iceBergTablefields.add(nestedField);
 					break;
 
 				case 100: //BINARY_FLOAT
 				case 101: //BINARY_DOUBLE
                     nestedField = isPkCol
-                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DoubleType.get())
-                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.DoubleType.get());
+                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
                     iceBergTablefields.add(nestedField);
 					break;
 				case 112: //CLOB 0x70
@@ -395,8 +395,8 @@ public class IceBergTableOperationByEngine {
                 case 5001: //pg database int
 						//log.info(" --reload( PG_int )->[FieldType.BIGINT]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
                     nestedField = isPkCol
-                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.IntegerType.get())
-                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.IntegerType.get());
+                            ? Types.NestedField.required(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get())
+                            : Types.NestedField.optional(iceBergTablefields.size() + 1, columnVo.getColumnName().toLowerCase(), Types.StringType.get());
                     iceBergTablefields.add(nestedField);
 
                     break;

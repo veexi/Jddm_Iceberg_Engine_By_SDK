@@ -299,9 +299,9 @@ private static boolean initializeServices() throws InitializationException {
         scheduledThreadPool.scheduleAtFixedRate(
                 new ReLoaderTableInfoBySqliteDB(), 5, 5, TimeUnit.SECONDS);
 
-        scheduledThreadPool.scheduleAtFixedRate(
+ /*       scheduledThreadPool.scheduleAtFixedRate(
                 new TimerByIcebergCompactFileThread(), 5,
-                Constant.compactIntervalSeconds, TimeUnit.SECONDS);
+                Constant.compactIntervalSeconds, TimeUnit.SECONDS);*/
 
         scheduledThreadPool.scheduleAtFixedRate(
                 KerberosAuthUtil::renewTgtIfNeeded, 1, 1, TimeUnit.HOURS);
