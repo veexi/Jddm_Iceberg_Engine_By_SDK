@@ -79,9 +79,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     continue;
                 }
 
-                GlobalConfInfo.engineAtomicByTableKeyMap
+/**                GlobalConfInfo.engineAtomicByTableKeyMap
                         .computeIfAbsent(schemaKeyByParquetThreadID, k -> new AtomicInteger(0))
-                        .getAndIncrement();
+                        .getAndIncrement();*/
 
                 initCacheIfAbsent(schemaKeyByParquet, schemaKeyByParquetThreadID);
 
@@ -294,6 +294,11 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         ops.add(RowOperation.insert(newRecord, offset + 1));
                         return ops;
                     }
+                }
+                if (hasOldData && !hasNewData) {
+                    log.warn("[IceBergPool][tid={}] UPDATE only before-image, delete old row table={} offset={}",
+                            Thread.currentThread().getId(), tableKeyName, offset);
+                    return Collections.singletonList(RowOperation.delete(oldRecord, offset));
                 }
                 // 无主键表 transaction 模式退化为轨迹模式（insert only），或 hasOldData/hasNewData 不完整时兜底
                 if (Constant.debugLogEnabled) {

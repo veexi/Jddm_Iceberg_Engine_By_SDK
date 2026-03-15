@@ -20,6 +20,8 @@ public class Constant {
 	public static Integer hiveDiffTimers=5;
 	public static String basicWorkPath="";
 	public static String socketServerPort="8313";
+	public static final int flushBatchMaxSize = 100000;
+
 	public static String socketThreadPoolSize="20";
 	public static int LOG_AGENT_LEVEL=1000;
     public static final AtomicBoolean writeToIceBergDBFlag = new AtomicBoolean(true);

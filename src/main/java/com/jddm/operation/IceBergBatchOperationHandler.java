@@ -217,6 +217,7 @@ public class IceBergBatchOperationHandler {
 /*                    if (Constant.debugLogEnabled) {
                         log.info("[IceBergBatch][tid={}] table={} Final INSERT: pk={}", Thread.currentThread().getId(), tableKeyName, extractRecordKey(op.getNewRecord(), pkNames));
                     }*/
+                    finalDeletes.add(op.getNewRecord());
                     break;
 
                 case DELETE:
@@ -382,6 +383,7 @@ public class IceBergBatchOperationHandler {
 
         // 按分区键分组
         Map<PartitionKey, List<GenericRecord>> partitionMap = new HashMap<>();
+        PartitionKey pKey = new PartitionKey(spec, iceBergTable.schema());
         for (GenericRecord record : deleteRecords) {
             // 跳过 PK 值为 null 的记录，无法定位要删除的行
             boolean pkValid = true;
@@ -397,7 +399,6 @@ public class IceBergBatchOperationHandler {
                 continue;
             }
 
-            PartitionKey pKey = new PartitionKey(spec, iceBergTable.schema());
             if (isPartitioned) {
                 pKey.partition(record);
             }
@@ -460,10 +461,6 @@ public class IceBergBatchOperationHandler {
             List<RowOperation> allOps = new ArrayList<>();
             List<String> keysToRemove = new ArrayList<>();
 
-            // 新增：记录每个队列被抽出来的数据，用于失败回滚
-            Map<String, List<RowOperation>> backupMap = new HashMap<>();
-
-            // 核心修复：对 keys 进行排序，保证不同线程队列的合并顺序是确定的，消除 ConcurrentHashMap 迭代器的随机性
             List<String> sortedKeys = GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.keySet().stream()
                     .filter(k -> k.startsWith(tableKeyName + "."))
                     .sorted()
@@ -472,82 +469,73 @@ public class IceBergBatchOperationHandler {
             for (String key : sortedKeys) {
                 java.util.concurrent.LinkedBlockingDeque<RowOperation> queue = GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(key);
                 if (queue == null) continue;
-
                 List<RowOperation> drained = new ArrayList<>();
-                // 核心修复：加锁 drainTo，防止与工作线程的 addAll 并发导致数据包被撕裂（原子性入队/出队）
                 synchronized (queue) {
                     queue.drainTo(drained);
                 }
-
                 if (!drained.isEmpty()) {
                     allOps.addAll(drained);
                     keysToRemove.add(key);
-                    backupMap.put(key, drained); // 备份数据
                 }
             }
 
             if (allOps.isEmpty()) return;
 
-            // 虽然在 buildRowOperations 中已按 pktSeq 分配 Offset，但此处必须再次进行稳定排序
-            // 保证在不同线程生成的 Offset 相同（极端情况）时，依然保持确定的合并顺序
             allOps.sort(Comparator.comparingLong(RowOperation::getBinlogOffset));
-            
-            String batchId = UUID.randomUUID().toString().substring(0, 8);
+
+            int totalOps = allOps.size();
+            int batchMaxSize = Constant.flushBatchMaxSize; // 建议常量值设为 50000
+            int flushedUntil = 0; // 记录已成功提交到哪个位置
+
+            log.info("[IceBergBatch][tid={}] flush start table={} totalOps={} batchMaxSize={}",
+                    Thread.currentThread().getId(), tableKeyName, totalOps, batchMaxSize);
 
             try {
-                log.info("[IceBergBatch][tid={}] >>> Preparing to submit batchId={} for table={} opsCount={}", 
-                        Thread.currentThread().getId(), batchId, tableKeyName, allOps.size());
-                
-                // 尝试写入 Iceberg
-                FlushMetrics metrics = flushBatch(tableKeyName, tableKeyName, allOps);
+                for (int start = 0; start < totalOps; start += batchMaxSize) {
+                    int end = Math.min(start + batchMaxSize, totalOps);
+                    // subList 是视图，不复制，不额外占内存
+                    List<RowOperation> batch = allOps.subList(start, end);
+                    String batchId = UUID.randomUUID().toString().substring(0, 8);
 
-                // 写入成功后再清理缓存
+                    log.info("[IceBergBatch][tid={}] >>> batchId={} table={} [{}-{}/{}]",
+                            Thread.currentThread().getId(), batchId, tableKeyName, start, end, totalOps);
+
+                    FlushMetrics metrics = flushBatch(tableKeyName, tableKeyName, batch);
+                    flushedUntil = end; // 只有 flushBatch 成功才移动这个指针
+
+                    log.info("[IceBergBatch][tid={}] <<< batchId={} table={} dataFiles={} deleteFiles={}",
+                            Thread.currentThread().getId(), batchId, tableKeyName,
+                            metrics.dataFilesCount, metrics.deleteFilesCount);
+                }
+
+                // 全部 batch 成功后统一清缓存
                 keysToRemove.forEach(k -> {
                     GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(k);
                     GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(k);
                     GlobalConfInfo.engineAtomicByTableKeyMap.remove(k);
                 });
-                
-                log.info("[IceBergBatch][tid={}] <<< Successfully submitted batchId={} for table={} dataFilesCount={} deleteFilesCount={} dataFilesPaths={} deleteFilesPaths={}", 
-                        Thread.currentThread().getId(), batchId, tableKeyName, metrics.dataFilesCount, metrics.deleteFilesCount, metrics.dataFilePaths, metrics.deleteFilePaths);
 
             } catch (Exception e) {
-                // 核心修复：写入失败时，必须将备份数据放回各自队列的【队头】（LIFO），而不是队尾！
-                // 这样能确保下次 flush 时，这批旧数据依然在最前面，且由于之前已加锁 drainTo，新老数据界限清晰
-                log.error("[IceBergBatch][tid={}] !!! Flush failed for batchId={}, table={}, rolling back {} ops to queue head. Error: {}", 
-                        Thread.currentThread().getId(), batchId, tableKeyName, allOps.size(), e.getMessage());
-                
-                // [Debug Log] 打印报错时的具体数据明细
-                try {
-                    List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
-                    log.error("[IceBergBatch][tid={}][Debug] Failed Batch Data Details (batchId={}):", Thread.currentThread().getId(), batchId);
-                    for (int i = 0; i < allOps.size(); i++) {
-                        RowOperation op = allOps.get(i);
-                        String pkValue = "N/A";
-                        try {
-                            pkValue = extractPkKey(op, pkNames);
-                        } catch (Exception ignore) {}
-                        
-                        log.error("[IceBergBatch][tid={}][Debug] OpIdx={} | Type={} | PK={} | Offset={}", 
-                                Thread.currentThread().getId(), i, op.getType(), pkValue, op.getBinlogOffset());
-                    }
-                } catch (Exception logEx) {
-                    log.error("[IceBergBatch][tid={}] Error while logging debug info: {}", Thread.currentThread().getId(), logEx.getMessage());
-                }
+                int remaining = totalOps - flushedUntil;
+                log.error("[IceBergBatch][tid={}] Flush failed table={} flushedOps={}/{} remaining={}. Error: {}",
+                        Thread.currentThread().getId(), tableKeyName, flushedUntil, totalOps, remaining, e.getMessage());
 
-                for (Map.Entry<String, List<RowOperation>> backupEntry : backupMap.entrySet()) {
-                    java.util.concurrent.LinkedBlockingDeque<RowOperation> queue = GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(backupEntry.getKey());
-                    if (queue != null) {
-                        List<RowOperation> toRestore = backupEntry.getValue();
-                        synchronized (queue) {
-                            // 逆序放入队头，保证原始顺序不变
+                // 只回滚尚未提交的部分，已提交的 batch 不能再放回队列（否则重复写）
+                if (remaining > 0 && !keysToRemove.isEmpty()) {
+                    String fallbackKey = keysToRemove.get(0);
+                    java.util.concurrent.LinkedBlockingDeque<RowOperation> fallbackQueue =
+                            GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(fallbackKey);
+                    if (fallbackQueue != null) {
+                        List<RowOperation> toRestore = new ArrayList<>(allOps.subList(flushedUntil, totalOps));
+                        synchronized (fallbackQueue) {
                             for (int i = toRestore.size() - 1; i >= 0; i--) {
-                                queue.addFirst(toRestore.get(i));
+                                fallbackQueue.addFirst(toRestore.get(i));
                             }
                         }
+                        log.error("[IceBergBatch][tid={}] Rolled back {} ops to key={}",
+                                Thread.currentThread().getId(), toRestore.size(), fallbackKey);
                     }
                 }
-                // 抛出异常让外层 Timer 知道本次执行失败
                 throw e;
             }
         } finally {
@@ -744,14 +732,15 @@ public class IceBergBatchOperationHandler {
 
         PartitionSpec spec = table.spec();
         boolean isPartitioned = spec.isPartitioned();
-        // 鏍稿績锛氭寜鍒嗗尯閿璁板綍杩涜鍒嗙粍
+
         Map<PartitionKey, List<GenericRecord>> partitionMap = new HashMap<>();
+        PartitionKey reusablePKey = new PartitionKey(spec, table.schema()); // ← 移到循环外，只 new 一次
+
         for (GenericRecord record : records) {
-            PartitionKey pKey = new PartitionKey(spec, table.schema());
             if (isPartitioned) {
-                pKey.partition(record);
+                reusablePKey.partition(record); // 原地更新，复用同一个对象
             }
-            partitionMap.computeIfAbsent(pKey.copy(), k -> new ArrayList<>()).add(record);
+            partitionMap.computeIfAbsent(reusablePKey.copy(), k -> new ArrayList<>()).add(record);
         }
 
         List<DataFile> dataFiles = new ArrayList<>();
@@ -769,7 +758,7 @@ public class IceBergBatchOperationHandler {
             // 娉ㄦ剰锛氳繖閲屼篃浣跨敤浜?new Schema() 鏉ヤ繚璇佸垪鏁扮粷瀵瑰榻愶紝閬垮厤浣犱箣鍓嶉亣鍒扮殑
             // ArrayIndexOutOfBoundsException
             FileAppender<GenericRecord> appender = Parquet.write(outputFile)
-                    .schema(new Schema(entry.getValue().get(0).struct().fields()))
+                    .schema(table.schema())
                     .createWriterFunc(GenericParquetWriter::buildWriter)
                     .build();
 
