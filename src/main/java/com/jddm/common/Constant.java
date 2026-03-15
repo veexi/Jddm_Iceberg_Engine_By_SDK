@@ -50,6 +50,7 @@ public class Constant {
     /** dfs.namenode.kerberos.principal，由 ZK_SECURITY_PRINCIPAL_INSTANCE 控制，不填则不设置 */
     public static String hdfsNamenodePrincipal = "";
     public static String hiveMetastorePrincipal = "";
+    public static boolean dropTableFlag = false;
 }
 
 

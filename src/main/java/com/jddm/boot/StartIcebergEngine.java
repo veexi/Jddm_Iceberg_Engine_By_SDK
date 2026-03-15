@@ -2,7 +2,10 @@ package com.jddm.boot;
 
 import com.dsg.analysis.tableInfo.vo.SourceTableInfoVo;
 import com.dsg.analysis.tableInfo.vo.TableInfoVo;
+
 import com.dsg.analysis.vo.PackageReturnVo;
+import com.jddm.vo.SequencedPackage;
+import com.jddm.operation.IceBergBatchOperationHandler;
 import com.dsg.operation.common.ConstantSet;
 import com.jddm.common.Constant;
 import com.jddm.conf.Configuration;
@@ -246,7 +249,9 @@ public class StartIcebergEngine {
                                 }
                                 System.out.println(" DML ::" + ((PackageReturnVo) item).getOwnerName() + "." + ((PackageReturnVo) item).getTableName() + " fileNo ::" + ((PackageReturnVo) item).getFileNo() + " Rows ::" + ((PackageReturnVo) item).getRowsCount());
                                 try {
-                                    GlobalSetConfInfo.icebergEngineOperationQueue.put((PackageReturnVo) item);
+                                    // 核心修复：单线程接收端立即分配序列号，消除多线程分配时的竞态乱序
+                                    long pktSeq = GlobalConfInfo.icebergEngineOperationSeq.getAndIncrement();
+                                    GlobalSetConfInfo.icebergEngineOperationQueue.put(new SequencedPackage((PackageReturnVo) item, pktSeq));
                                 } catch (InterruptedException e) {
                                     throw new RuntimeException(e);
                                 }

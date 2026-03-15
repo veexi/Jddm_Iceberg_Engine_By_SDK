@@ -7,6 +7,7 @@ import com.jddm.common.Constant;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
 import com.jddm.vo.RowOperation;
+import com.jddm.vo.SequencedPackage;
 import com.jddm.operation.IceBergBatchOperationHandler;
 import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
@@ -17,7 +18,7 @@ import org.apache.logging.log4j.Logger;
 
 
 import java.util.*;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
@@ -35,7 +36,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
     @Override
     public void run() {
-        Object recvPackageObj;
+        SequencedPackage seqPackage;
         PackageReturnVo packageReturnVo;
 
         long startTimer = 0L;
@@ -55,13 +56,14 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     continue;
                 }
 
-                recvPackageObj = GlobalSetConfInfo.icebergEngineOperationQueue.take();
-                if (!(recvPackageObj instanceof PackageReturnVo)) {
+                Object recvPackageObj = GlobalSetConfInfo.icebergEngineOperationQueue.take();
+                if (!(recvPackageObj instanceof SequencedPackage)) {
                     continue;
                 }
 
-                packageReturnVo   = (PackageReturnVo) recvPackageObj;
-                long pktSeq      = GlobalConfInfo.icebergEngineOperationSeq.getAndIncrement();
+                seqPackage       = (SequencedPackage) recvPackageObj;
+                packageReturnVo   = seqPackage.getPackageVo();
+                long pktSeq      = seqPackage.getSequence(); // 核心修复：使用接收端分配的严格有序序列号
                 rowUdbColumnMap   = packageReturnVo.getRowUdbColumnMap();
                 rowsNum           = Integer.parseInt(packageReturnVo.getRowsCount());
                 columnsNum        = Integer.parseInt(packageReturnVo.getColsCount());
@@ -93,9 +95,11 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     log.info("[IceBergPool][tid={}] pktSeq={} opDetails={}", Thread.currentThread().getId(), pktSeq, summarizeOps(opsBuffer, schemaKeyByParquet, 10));
                 }
 
-                GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap
-                        .get(schemaKeyByParquetThreadID)
-                        .addAll(opsBuffer);
+                // 核心修复：对队列加锁执行 addAll，防止 drainTo 在 addAll 过程中由于非原子性导致数据包被“撕裂”
+                java.util.concurrent.LinkedBlockingDeque<RowOperation> queue = GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(schemaKeyByParquetThreadID);
+                synchronized (queue) {
+                    queue.addAll(opsBuffer);
+                }
 
                 GlobalConfInfo.lastDataWriteTimerByParquetMap
                         .put(schemaKeyByParquetThreadID, System.currentTimeMillis());
@@ -137,6 +141,12 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         List<RowOperation> result = new ArrayList<>(rowsNum);
         long baseOffset = pktSeq * 1_000_000L;
 
+        // 【性能优化】使用复用的 StringBuilder 来拼接 Debug 日志，避免在循环中产生海量的小 String 对象
+        StringBuilder debugColLogs = null;
+        if (Constant.debugLogEnabled) {
+            debugColLogs = new StringBuilder(1024);
+        }
+
         for (int rowNo = 0; rowNo < rowsNum; rowNo++) {
 
             GenericRecord newRecord = GenericRecord.create(
@@ -147,6 +157,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             boolean hasNewData = false;
             boolean hasOldData = false;
             int mergerColLimit = columnsNum;  // merge I/D 只处理前半列
+
+            if (Constant.debugLogEnabled) {
+                debugColLogs.setLength(0); // 清空上一次的记录，复用内存
+            }
 
             for (int colNo = 0; colNo < columnsNum; colNo++) {
                 Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(rowNo + "-" + colNo);
@@ -175,13 +189,20 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 if (colNo > mergerColLimit) {
                     continue;
                 }
-                
-                // 将原本独立的 Debug 打印移入主循环，减少 OOM 风险和性能开销
+
                 if (Constant.debugLogEnabled) {
-                    log.info("[IceBergPool][tid={}] table={} op={} row={} colName={} colValue={} cflag={}",
-                            Thread.currentThread().getId(), schemaKeyByParquet, opType, rowNo,
-                            columnInfo.getColumnName(), columnInfo.getColumnValue(), columnInfo.getCflag());
+                    if (debugColLogs.length() > 0) {
+                        debugColLogs.append("\n"); // 使用换行符，使每列日志独立成行，视觉上和原来完全一致
+                    }
+                    debugColLogs.append("[IceBergPool][tid=").append(Thread.currentThread().getId())
+                                .append("] table=").append(schemaKeyByParquet)
+                                .append(" op=").append(opType)
+                                .append(" row=").append(rowNo)
+                                .append(" colName=").append(columnInfo.getColumnName())
+                                .append(" colValue=").append(columnInfo.getColumnValue())
+                                .append(" cflag=").append(columnInfo.getCflag());
                 }
+                
                 switch (opType) {
                     case "I":
                         if ((columnInfo.getCflag() & 1) == 1) {
@@ -209,6 +230,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 }
             }
 
+            if (Constant.debugLogEnabled && debugColLogs.length() > 0) {
+                log.info(debugColLogs.toString());
+            }
+
             List<RowOperation> ops = buildOperation(opType, newRecord, oldRecord,
                     hasNewData, hasOldData, baseOffset + rowNo, schemaKeyByParquet);
             if (ops != null) {
@@ -227,9 +252,12 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                                               long offset,
                                               String tableKeyName) {
         boolean isTransaction = "transaction".equals(Constant.icebergWriteMode);
-        if (Constant.debugLogEnabled) {
+        // [性能优化] 移除针对每一行数据的 buildOperation 日志打印。
+        // 在海量数据同步（如10万条/批）时，即使开启了 Debug，每一行都打印日志也会导致极为严重的 CPU 占用（String 拼接和 IO）以及 OOM。
+        // 如果需要调试，请依赖上层 batch 级别的 summarizeOps 日志。
+/*        if (Constant.debugLogEnabled) {
             log.info("[IceBergPool][tid={}] buildOperation table={} opType={} txMode={} hasNewData={} hasOldData={} offset={}", Thread.currentThread().getId(), tableKeyName, opType, isTransaction, hasNewData, hasOldData, offset);
-        }
+        }*/
 
         boolean hasPk = hasPk(tableKeyName);
 
@@ -459,7 +487,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         GenericRecord record = GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
         GlobalSetConfInfo.IceBergTableGnericCacheMap.put(schemaKeyByParquetThreadID, record);
         GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap
-                .putIfAbsent(schemaKeyByParquetThreadID, new LinkedBlockingQueue<>());
+                .putIfAbsent(schemaKeyByParquetThreadID, new LinkedBlockingDeque<>());
         log.info("[IceBergPool][tid={}] cache init done key={} cost={}ms", Thread.currentThread().getId(), schemaKeyByParquetThreadID, System.currentTimeMillis() - startTimer);
     }
 

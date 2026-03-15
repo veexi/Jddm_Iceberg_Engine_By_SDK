@@ -419,7 +419,7 @@ public class IceBergTableOperationByEngine {
 		}
 		
 		iceBergSchema = new Schema(iceBergTablefields);
-
+		log.info("------>>> Create Schema Sql::"+iceBergSchema.toString());
 
 		GlobalSetConfInfo.IceBergSchemaCahceMap.put(setTableKeyName, iceBergSchema);
 		
@@ -445,7 +445,8 @@ public class IceBergTableOperationByEngine {
             Configuration hadoopConf = KerberosAuthUtil.buildHadoopConf();
             String dynamicHiveSitePath = Constant.basicWorkPath + java.io.File.separator + "config" + java.io.File.separator + "hive-site.xml";
             hadoopConf.addResource(new org.apache.hadoop.fs.Path(dynamicHiveSitePath));
-            catalog.setConf(hadoopConf);
+			hadoopConf.set("fs.defaultFS", Constant.fsDefaultInfo); // 确保强制生效
+			catalog.setConf(hadoopConf);
             Map<String, String> properties = new HashMap<String, String>();
             properties.put(CatalogProperties.WAREHOUSE_LOCATION, Constant.fsDefaultInfo);
             properties.put(CatalogProperties.URI, Constant.hiveMetastoreUris);
@@ -454,7 +455,15 @@ public class IceBergTableOperationByEngine {
 // 有主键的表开启 merge-on-read，支持 equality delete
 
             catalog.initialize("hive", properties);
-            log.info("------>>> fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo, Constant.hiveMetastoreUris);
+            log.info("------>>> Original config fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo, Constant.hiveMetastoreUris);
+/*            StringBuilder confSb = new StringBuilder();
+            for (Map.Entry<String, String> entry : catalog.getConf()) {
+                if (entry.getKey().startsWith("fs.") || entry.getKey().startsWith("dfs.") || entry.getKey().startsWith("hive.") || entry.getKey().startsWith("hadoop.")) {
+                    confSb.append(entry.getKey()).append("=").append(entry.getValue()).append("\n");
+                }
+            }*/
+//            log.info("------>>> Read from HiveCatalog Conf (fs/dfs/hive/hadoop) :\n{}", confSb.toString());
+            log.info("------>>> HiveCatalog Initialize Properties : {}", properties);
 
 // PartitionSpec：有分区字段用 identity，否则无分区
             if (partColName != null) {
@@ -479,8 +488,38 @@ public class IceBergTableOperationByEngine {
                 catalog.createNamespace(ns);
                 log.info("Created missing namespace: {}", ns);
             }
-			if(!catalog.tableExists(tableIdentifier)) {
+			log.info("------>>> Create Table Sql:: "+tableIdentifier);
+			boolean isTableExists = false;
+			try {
+				isTableExists = catalog.tableExists(tableIdentifier);
+			} catch (Exception e) {
+				String errMsg = e.getMessage();
+				Throwable cause = e.getCause();
+				while (cause != null) {
+					if (cause.getMessage() != null) {
+						errMsg += " " + cause.getMessage();
+					}
+					cause = cause.getCause();
+				}
+
+				if (errMsg != null && errMsg.contains("Operation category READ is not supported in state standby")) {
+					log.warn("[DDL] Caught StandbyException during tableExists check. Assuming table exists to trigger drop/recreate logic. Error: {}", e.getMessage());
+					isTableExists = true;
+				} else {
+					// 其它未知异常，直接抛出
+					throw e;
+				}
+			}
+
+			if(!isTableExists) {
 				properties.put("engine.hive.enabled", "true");
+/*				String forceLocation = Constant.fsDefaultInfo+"/data/warehouse/tablespace/managed/hive/"
+				                        + tableInfoVo.getOwner().toLowerCase() + ".db/"
+				                        + tableInfoVo.getTableName().toLowerCase();
+				 properties.put(TableProperties.WRITE_DATA_LOCATION, forceLocation + "/data");
+				 properties.put(TableProperties.WRITE_METADATA_LOCATION, forceLocation + "/metadata");
+				 properties.put("location", forceLocation);
+				 log.info("------>>> Force specified table location: {}", forceLocation);*/
                 if (!pkNames.isEmpty() && "transaction".equals(Constant.icebergWriteMode)) {
                     properties.put(TableProperties.DELETE_MODE, "merge-on-read");
                     properties.put(TableProperties.UPDATE_MODE, "merge-on-read");
@@ -490,8 +529,10 @@ public class IceBergTableOperationByEngine {
 				iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
 				GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
 			}else {
-				if(ConstantSet.jddmEngineDropTable){
-					catalog.dropTable(tableIdentifier);
+				if(Constant.dropTableFlag){
+					log.warn("[DDL] DROP_TABLE_FLAG is true, dropping existing table: {}", tableIdentifier);
+					catalog.dropTable(tableIdentifier,true);
+					log.info("[DDL] Successfully dropped table: {}, proceeding to recreate it.", tableIdentifier);
 					properties.put("engine.hive.enabled", "true");
                     if (!pkNames.isEmpty() && "transaction".equals(Constant.icebergWriteMode)) {
                         properties.put(TableProperties.DELETE_MODE, "merge-on-read");

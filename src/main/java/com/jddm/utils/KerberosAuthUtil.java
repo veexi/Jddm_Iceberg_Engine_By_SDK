@@ -51,33 +51,25 @@ public class KerberosAuthUtil {
 
         try {
             // 关键代码：直接使用 org.apache.hadoop.fs.Path，强制让底层优先使用本地配置覆盖系统默认配置
-            conf.addResource(new org.apache.hadoop.fs.Path(configPath + "core-site.xml"));
-            conf.addResource(new org.apache.hadoop.fs.Path(configPath + "hdfs-site.xml"));
-            conf.addResource(new org.apache.hadoop.fs.Path(configPath + "hive-site.xml"));
+            String coreSitePath = configPath + "core-site.xml";
+            String hdfsSitePath = configPath + "hdfs-site.xml";
+            String hiveSitePath = configPath + "hive-site.xml";
+            
+            log.info("[Kerberos] Loading core-site.xml from: {}", coreSitePath);
+            conf.addResource(new org.apache.hadoop.fs.Path(coreSitePath));
+            
+            log.info("[Kerberos] Loading hdfs-site.xml from: {}", hdfsSitePath);
+            conf.addResource(new org.apache.hadoop.fs.Path(hdfsSitePath));
+            
+            log.info("[Kerberos] Loading hive-site.xml from: {}", hiveSitePath);
+            conf.addResource(new org.apache.hadoop.fs.Path(hiveSitePath));
         } catch (Exception e) {
             log.error("[Kerberos] Error loading local Hadoop XML configs", e);
         }
-/*
-        try {
-            File coreFile = new File(configPath + "core-site.xml");
-            if (coreFile.exists()) {
-                conf.addResource(coreFile.toURI().toURL());
-            }
 
-            File hdfsFile = new File(configPath + "hdfs-site.xml");
-            if (hdfsFile.exists()) {
-                conf.addResource(hdfsFile.toURI().toURL());
-            }
-
-            File hiveFile = new File(configPath + "hive-site.xml");
-            if (hiveFile.exists()) {
-                conf.addResource(hiveFile.toURI().toURL());
-            }
-        } catch (Exception e) {
-            log.error("[Kerberos] Error loading local Hadoop XML configs", e);
+        if (Constant.fsDefaultInfo != null && !Constant.fsDefaultInfo.isEmpty()) {
+            conf.set("fs.defaultFS", Constant.fsDefaultInfo);
         }
-*/
-
         conf.set("fs.hdfs.impl.disable.cache", "true");
         conf.set("fs.hdfs.impl", "org.apache.hadoop.hdfs.DistributedFileSystem");
         

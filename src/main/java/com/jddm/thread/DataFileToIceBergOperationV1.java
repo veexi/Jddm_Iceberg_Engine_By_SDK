@@ -1,3 +1,4 @@
+/*
 package com.jddm.thread;
 
 import com.jddm.common.Constant;
@@ -13,9 +14,11 @@ import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
+*/
 /**
  * Flush ops from OpsMap to Iceberg via IceBergBatchOperationHandler.
- */
+ *//***
+
 public class DataFileToIceBergOperationV1 extends Thread {
 
     public Logger log = LogManager.getLogger(DataFileToIceBergOperationV1.class);
@@ -76,4 +79,4 @@ public class DataFileToIceBergOperationV1 extends Thread {
 
     public String getSchemaKeyByParquet() { return schemaKeyByParquet; }
     public void setSchemaKeyByParquet(String key) { this.schemaKeyByParquet = key; }
-}
+}*/

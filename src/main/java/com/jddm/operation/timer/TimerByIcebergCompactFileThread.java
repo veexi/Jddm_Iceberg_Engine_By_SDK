@@ -5,7 +5,8 @@ import com.jddm.conf.GlobalSetConfInfo;
 import com.jddm.operation.IceBergBatchOperationHandler;
 import org.apache.iceberg.*;
 import org.apache.iceberg.data.GenericRecord;
-import org.apache.iceberg.data.parquet.GenericParquetReaders;   // ← 复数，修复问题1
+import org.apache.iceberg.data.IcebergGenerics;
+import org.apache.iceberg.data.Record;
 import org.apache.iceberg.data.parquet.GenericParquetWriter;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.DataWriter;
@@ -74,17 +75,12 @@ public class TimerByIcebergCompactFileThread implements Runnable {
         log.info("[Compact] table={} found {} small files, start compact", tableKey, smallTasks.size());
 
         List<GenericRecord> allRecords = new ArrayList<>();
-        for (FileScanTask task : smallTasks) {
-            InputFile inputFile = table.io().newInputFile(task.file().path().toString());
-            try (CloseableIterable<GenericRecord> reader =
-                         Parquet.read(inputFile)
-                                 .project(schema)
-                                 .createReaderFunc(fileSchema ->
-                                         GenericParquetReaders.buildReader(schema, fileSchema))
-                                 .build()) {
-                for (GenericRecord rec : reader) {
-                    allRecords.add(rec);
-                }
+        // 核心修复：使用 IcebergGenerics.read(table) 进行读取。
+        // 该方法会应用所有的 DeleteFiles，确保读出的数据是业务逻辑上“活着”的行。
+        // 直接读取 Parquet 物理文件会导致已删除数据“复活”。
+        try (CloseableIterable<Record> reader = IcebergGenerics.read(table).build()) {
+            for (Record rec : reader) {
+                allRecords.add((GenericRecord) rec);
             }
         }
 

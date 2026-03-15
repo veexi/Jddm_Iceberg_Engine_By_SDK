@@ -229,6 +229,14 @@ public class InitConfigParameter {
                 System.exit(0);
             }
 
+            parameterStr = GlobalConfInfo.getConf().getValue("DROP_TABLE_FLAG");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                Constant.dropTableFlag = Boolean.parseBoolean(parameterStr.trim());
+                parameterStrMap.put("DROP_TABLE_FLAG", Constant.dropTableFlag);
+            } else {
+                parameterStrMap.put("DROP_TABLE_FLAG", Constant.dropTableFlag);
+            }
+
             hdfsDir = new File(ConstantSet.baseWorkDir + File.separator + StartIcebergEngine.getHiveFilePath());
             if (hdfsDir.exists()) {
 
