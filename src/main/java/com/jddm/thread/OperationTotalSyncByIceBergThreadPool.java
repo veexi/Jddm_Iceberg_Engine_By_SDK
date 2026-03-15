@@ -510,8 +510,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         IceBergBatchOperationHandler.flushAllThreadsForTable(schemaKeyByParquet);
 
 
-        GlobalConfInfo.lastDataWriteTimerByParquetMap
-                .put(schemaKeyByParquetThreadID, System.currentTimeMillis());
+/*        GlobalConfInfo.lastDataWriteTimerByParquetMap
+                .put(schemaKeyByParquetThreadID, System.currentTimeMillis());*/
 
 //        waitForAllThreadsComplete();
 

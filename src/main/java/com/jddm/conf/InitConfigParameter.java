@@ -109,10 +109,10 @@ public class InitConfigParameter {
                 } else {
                     log.info("");
                     log.info(" Setting " + Constant.JddmEngineTypeInfo + " Hive&Hdfs Setting Local Timer Format ! For Example[Hive.Partition.LocalTime.Format=yyyyMMDDHH] ......");
+                    log.info("");
                     System.exit(0);
                 }
             }
-
 
             parameterStr = GlobalConfInfo.getConf().getValue("ICEBERG_WRITE_MODE");
             if (parameterStr != null && !parameterStr.equals("")) {
@@ -126,6 +126,48 @@ public class InitConfigParameter {
                 }
             } else {
                 parameterStrMap.put("ICEBERG_WRITE_MODE", Constant.icebergWriteMode);
+            }
+
+            // COW 去重模式：batch=每批次去重, timer=仅定时去重, none=不去重
+            parameterStr = GlobalConfInfo.getConf().getValue("COW_MODE");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                String cowMode = parameterStr.trim().toLowerCase();
+                if ("batch".equals(cowMode) || "timer".equals(cowMode) || "none".equals(cowMode)) {
+                    Constant.cowMode = cowMode;
+                    parameterStrMap.put("COW_MODE", cowMode);
+                } else {
+                    log.warn(" Invalid COW_MODE={}, use default batch", parameterStr);
+                    parameterStrMap.put("COW_MODE", Constant.cowMode);
+                }
+            } else {
+                parameterStrMap.put("COW_MODE", Constant.cowMode);
+            }
+
+            // 定时任务去重开关
+            parameterStr = GlobalConfInfo.getConf().getValue("COMPACT_DEDUP_ENABLED");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                Constant.compactDedupEnabled = Boolean.parseBoolean(parameterStr.trim());
+                parameterStrMap.put("COMPACT_DEDUP_ENABLED", Constant.compactDedupEnabled);
+            } else {
+                parameterStrMap.put("COMPACT_DEDUP_ENABLED", Constant.compactDedupEnabled);
+            }
+
+            // 定时任务小文件合并开关
+            parameterStr = GlobalConfInfo.getConf().getValue("COMPACT_SMALL_FILES_ENABLED");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                Constant.compactSmallFilesEnabled = Boolean.parseBoolean(parameterStr.trim());
+                parameterStrMap.put("COMPACT_SMALL_FILES_ENABLED", Constant.compactSmallFilesEnabled);
+            } else {
+                parameterStrMap.put("COMPACT_SMALL_FILES_ENABLED", Constant.compactSmallFilesEnabled);
+            }
+
+            // 定时合并间隔（秒）
+            parameterStr = GlobalConfInfo.getConf().getValue("COMPACT_INTERVAL_SECONDS");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                Constant.compactIntervalSeconds = Integer.parseInt(parameterStr.trim());
+                parameterStrMap.put("COMPACT_INTERVAL_SECONDS", Constant.compactIntervalSeconds);
+            } else {
+                parameterStrMap.put("COMPACT_INTERVAL_SECONDS", Constant.compactIntervalSeconds);
             }
 
             parameterStr = GlobalConfInfo.getConf().getValue("LOG_LEVEL_TYPE");
@@ -154,7 +196,6 @@ public class InitConfigParameter {
             }
 
             parameterStr = GlobalConfInfo.getConf().getValue("ENGINE_THREAD_TOTAL_SYNC_CONCURRENT");
-
             if (parameterStr != null && !parameterStr.equals("")) {
                 StartIcebergEngine.setTotalSyncNO(Integer.parseInt(parameterStr.trim()));
                 parameterStrMap.put("ENGINE_THREAD_TOTAL_SYNC_CONCURRENT",Integer.parseInt(parameterStr.trim()));
@@ -164,6 +205,7 @@ public class InitConfigParameter {
                 log.info("");
                 System.exit(0);
             }
+
             parameterStr = GlobalConfInfo.getConf().getValue("Engine_Authentication_Mode");
             Constant.kerberosEnabled = "kerberos".equalsIgnoreCase(
                     parameterStr != null ? parameterStr.trim() : "");
@@ -208,6 +250,7 @@ public class InitConfigParameter {
                     Constant.krb5ConfFilePath = krb5Path;
                     parameterStrMap.put("KERBEROS_KRB5_CONF_FILE", Constant.krb5ConfFilePath);
                 }
+
                 parameterStr = GlobalConfInfo.getConf().getValue("HIVE_METASTORE_KERBEROS_PRINCIPAL");
                 if (parameterStr == null || parameterStr.equals("")) {
                     log.error(" Engine_Authentication_Mode=Kerberos but HIVE_METASTORE_KERBEROS_PRINCIPAL is not set !");
@@ -222,7 +265,6 @@ public class InitConfigParameter {
                 incrementNo = Integer.parseInt(parameterStr.trim());
                 parameterStrMap.put("ENGINE_THREAD_INCREMENT_SYNC_CONCURRENT",Integer.parseInt(parameterStr.trim()));
             } else {
-
                 log.info("");
                 log.info(" Please Setting " + Constant.JddmEngineTypeInfo + " Increment Synchronize Number of parallel threads ......");
                 log.info("");
@@ -239,10 +281,8 @@ public class InitConfigParameter {
 
             hdfsDir = new File(ConstantSet.baseWorkDir + File.separator + StartIcebergEngine.getHiveFilePath());
             if (hdfsDir.exists()) {
-
                 log.info(" Jddm Iceberg Engine Path ::" + ConstantSet.baseWorkDir + File.separator + StartIcebergEngine.getHiveFilePath() + " exists ... ");
                 FileUtils.DeleteFileOrDirectory(hdfsDir);
-                //创建HDFS缓存目录
                 FileUtils.createDir(ConstantSet.baseWorkDir, StartIcebergEngine.getHiveFilePath());
                 FileUtils.createDir(ConstantSet.baseWorkDir, StartIcebergEngine.getHiveFilePath() + File.separator + "bak");
             }
@@ -250,13 +290,10 @@ public class InitConfigParameter {
         } catch (Exception e) {
             initFlag = false;
             throw new InitializationException("Config parameter initialization failed", e);
-
         }
         return initFlag;
-
-
-
     }
+
     public void printParameters(){
         if (parameterStrMap.isEmpty()) {
             log.info("Application startup parameters: No parameters configured");
@@ -271,10 +308,9 @@ public class InitConfigParameter {
                 .mapToInt(String::length)
                 .max()
                 .orElse(10);
-        // 计算最长的value长度用于对齐
 
         int maxValueLength = parameterStrMap.values().stream()
-                .mapToInt(value -> value != null ? value.toString().length() : 4) // "null"长度为4
+                .mapToInt(value -> value != null ? value.toString().length() : 4)
                 .max()
                 .orElse(10);
         String format = "[ %-" + Math.max(maxKeyLength, 15) + "s ]::[ %-"+Math.max(maxValueLength,10)+"s ]";
