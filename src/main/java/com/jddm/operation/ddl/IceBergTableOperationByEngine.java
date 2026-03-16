@@ -33,17 +33,18 @@ public class IceBergTableOperationByEngine {
 	public Logger log = LogManager.getLogger(IceBergTableOperationByEngine.class);
 	
 	
-	/*** *** *** ***
-	* @functionName（方法名称）: importHiveTable_IceBerg_Table 
-	* @description （方法说明）: Create Iceberg table in Hive DB | 在Hive库中创建Iceberg表；
-	* @param       （传入参数）: tableInfoVo     --->  Type:: TableInfoVo
-	* @param       （传入参数）: thisTableColMap --->  Type:: Map<String,String> 
-	* @return      （返回）   :  SocketReturnVo
-	* @exception   （异常）   : Exception ex
-	* @author      （创建人）: JH
-	* @since       （创建时间）:  2023/06/29 AM 0:55
-	* @ModifyTime  （修改时间）:  
-	***/
+    /**
+     * 在 Hive Catalog 中创建或同步 Iceberg 表。
+     * 该方法负责：
+     * 1. 解析源表元数据（字段名、类型、主键）。
+     * 2. 将源库类型映射为 Iceberg Schema。
+     * 3. 根据主键和写入模式（v2 表）配置 Equality Delete 策略。
+     * 4. 执行原子的表创建或加载操作，并缓存表句柄。
+     *
+     * @param tableInfoVo 源表结构化信息
+     * @param thisTableColMap 当前已识别映射的字段缓存
+     * @return 包含操作结果的通用返回对象
+     */
 	public SocketReturnVo importHiveTable_IceBerg_Table(TableInfoVo tableInfoVo,Map<String,String> thisTableColMap){
 		
     	SocketReturnVo socketReturnVo = new SocketReturnVo();
@@ -69,29 +70,31 @@ public class IceBergTableOperationByEngine {
 
 
 		List<Integer> pkColumnList = tableInfoVo.getPkColumnNo();
-		//StringBuffer pkStringInfo = new StringBuffer();
 		Map<String,String> pkColumnMap=new HashMap<String,String>();
-		//pkStringInfo.append("ALTER TABLE TEST_TAB ADD CONSTRAINT TAST_PK PRIMARY KEY(");
-		for( TableColumnVo columnVo: columnList){
-			
-			if(thisTableColMap.containsKey(columnVo.getColumnName().toLowerCase())){
-				thisTableColMap.remove(columnVo.getColumnName().toLowerCase());
-			}
-			
-			if(pkColumnList !=null && !pkColumnList.isEmpty()){
-				
-				for(Integer pkNo :pkColumnList){
-					
-					if(pkNo == columnVo.getColumnNo()){
+        // 第一步：解析并提取主键（PK）定义
+        // 主键信息对于 Transaction 模式下的数据去重和 Delete File 生成至关重要。
+        for( TableColumnVo columnVo: columnList){
+            
+            if(thisTableColMap.containsKey(columnVo.getColumnName().toLowerCase())){
+                thisTableColMap.remove(columnVo.getColumnName().toLowerCase());
+            }
+            
+            if(pkColumnList !=null && !pkColumnList.isEmpty()){
+                
+                for(Integer pkNo :pkColumnList){
+                    
+                    if(pkNo == columnVo.getColumnNo()){
                         log.info("Table: {} ,PrimaryKeyName: {} ,pkNo: {}",setTableKeyName,columnVo.getColumnName().toLowerCase(),pkNo);
-						pkColumnMap.put(columnVo.getColumnName().toLowerCase(), pkNo+"");
-						break;
-					}
-				}
-			}
-		}
+                        pkColumnMap.put(columnVo.getColumnName().toLowerCase(), pkNo+"");
+                        break;
+                    }
+                }
+            }
+        }
         List<String> pkNames = new ArrayList<>(pkColumnMap.keySet());
         GlobalSetConfInfo.TablePkColCacheMap.put(setTableKeyName, pkNames);
+        // 第二步：识别物理分区字段
+        // 如果开启了分区标志，我们将验证配置的分区字段是否存在于当前表结构中。
         String partColName = ConstantPublic.setPartitionFlag ?
                 ConstantPublic.setTablePartitionColName.toLowerCase().trim() : null;
         if (partColName != null && !partColName.isEmpty()) {
@@ -239,9 +242,12 @@ public class IceBergTableOperationByEngine {
 				log.info(" --reload[ALL FieldType]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
 
 			}
+            // 关键逻辑：类型映射与主键强制约束。
+            // 1. 在 transaction 模式下，主键字段被标记为 required，以确保 Equality Delete 的完整性。
+            // 2. 针对本引擎的高性能场景，多数复杂类型（日期、数值）默认映射为 Iceberg 的 String 存储，由解析层统一转换，确保写入稳定性。
             boolean isTransactionMode = "transaction".equals(Constant.icebergWriteMode);
             boolean isPkCol = isTransactionMode && pkColumnMap.containsKey(columnVo.getColumnName().toLowerCase());
-			switch(columnVo.getColumnType()){
+            switch(columnVo.getColumnType()){
 
 				case 1:
 				case 9:
@@ -465,7 +471,8 @@ public class IceBergTableOperationByEngine {
 //            log.info("------>>> Read from HiveCatalog Conf (fs/dfs/hive/hadoop) :\n{}", confSb.toString());
             log.info("------>>> HiveCatalog Initialize Properties : {}", properties);
 
-// PartitionSpec：有分区字段用 identity，否则无分区
+            // 第四步：构建分区规格（Partition Spec）。
+            // 采用 Identity 分区，即 Data File 的目录结构直接由分区字段的值决定。
             if (partColName != null) {
                 try {
                     spec = PartitionSpec.builderFor(GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName))
@@ -510,24 +517,18 @@ public class IceBergTableOperationByEngine {
 					throw e;
 				}
 			}
-
 			if(!isTableExists) {
 				properties.put("engine.hive.enabled", "true");
-/*				String forceLocation = Constant.fsDefaultInfo+"/data/warehouse/tablespace/managed/hive/"
-				                        + tableInfoVo.getOwner().toLowerCase() + ".db/"
-				                        + tableInfoVo.getTableName().toLowerCase();
-				 properties.put(TableProperties.WRITE_DATA_LOCATION, forceLocation + "/data");
-				 properties.put(TableProperties.WRITE_METADATA_LOCATION, forceLocation + "/metadata");
-				 properties.put("location", forceLocation);
-				 log.info("------>>> Force specified table location: {}", forceLocation);*/
+                // 开启 Merge-On-Read 模式。
+                // 这允许引擎使用 Equality Delete File 进行快速标记删除，而无需在写入阶段重写整个数据文件。
                 if (!pkNames.isEmpty() && "transaction".equals(Constant.icebergWriteMode)) {
                     properties.put(TableProperties.DELETE_MODE, "merge-on-read");
                     properties.put(TableProperties.UPDATE_MODE, "merge-on-read");
                     properties.put(TableProperties.MERGE_MODE,  "merge-on-read");
                     log.info("[DDL] table={} pk={} set merge-on-read", setTableKeyName, pkNames);
                 }
-				iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
-				GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
+                iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
+                GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
 			}else {
 				if(Constant.dropTableFlag){
 					log.warn("[DDL] DROP_TABLE_FLAG is true, dropping existing table: {}", tableIdentifier);

@@ -8,12 +8,12 @@ import org.apache.logging.log4j.Logger;
 import java.io.IOException;
 
 /**
- * className: HdfsValidator<br>
- * description: hdfs connection test<br>
- * author: wjl<br>
- * date: 2025/5/21 14:42<br>
+ * HDFS 连通性快速校验工具。
  */
 class HdfsValidator {
+    /**
+     * 验证是否能成功连接到 HDFS NameNode 并获取文件系统状态。
+     */
     public static void validateConnection(String fsDefaultFS) throws Exception {
         Logger log = LogManager.getLogger(HdfsValidator.class);
         try {

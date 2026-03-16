@@ -26,7 +26,8 @@ import java.util.concurrent.LinkedBlockingDeque;
 import java.util.stream.Collectors;
 
 /**
- * Batch handler: merge ops by PK, write data/delete files, commit RowDelta or COW.
+ * Iceberg 批次操作处理器：负责对 CDC 数据进行主键级合并、写入数据/删除文件，并提交到 Iceberg 表。
+ * 支持多种写入模式：Trajectory（轨迹模式）、COW（写时复制）以及 RowDelta（行增量模式）。
  */
 public class IceBergBatchOperationHandler {
 
@@ -36,10 +37,10 @@ public class IceBergBatchOperationHandler {
             new java.util.concurrent.ConcurrentHashMap<>();
 
     public static class FlushMetrics {
-        public final int dataFilesCount;
-        public final int deleteFilesCount;
-        public final java.util.List<String> dataFilePaths;
-        public final java.util.List<String> deleteFilePaths;
+        public final int dataFilesCount;    // 写入的数据文件数量
+        public final int deleteFilesCount;  // 写入的删除文件（Equality Delete）数量
+        public final java.util.List<String> dataFilePaths;   // 数据文件路径列表
+        public final java.util.List<String> deleteFilePaths; // 删除文件路径列表
 
         public FlushMetrics(int dataFilesCount, int deleteFilesCount,
                             java.util.List<String> dataFilePaths,
@@ -68,11 +69,12 @@ public class IceBergBatchOperationHandler {
 
         List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
 
-        // 无主键表：轨迹模式，所有操作直接 Append
+        // 无主键表处理逻辑：走轨迹模式（Audit records），所有 I/U/D 操作都直接转化为 Append
         if (pkNames == null || pkNames.isEmpty()) {
             log.info("[IceBergBatch][tid={}][Trajectory] No PK table, writing all ops as audit records, table={} ops={}",
                     Thread.currentThread().getId(), tableKeyName, allOps.size());
 
+            // 将所有操作记录展开为待写入的记录列表
             List<GenericRecord> recordsToWrite = allOps.stream()
                     .flatMap(op -> {
                         List<GenericRecord> rows = new ArrayList<>();
@@ -81,9 +83,11 @@ public class IceBergBatchOperationHandler {
                                 if (op.getNewRecord() != null) rows.add(op.getNewRecord());
                                 break;
                             case DELETE:
+                                // 轨迹模式下，删除也记录其原有数据
                                 if (op.getOldRecord() != null) rows.add(op.getOldRecord());
                                 break;
                             case UPDATE:
+                                // 更新记录则同时保留旧镜像和新镜像
                                 if (op.getOldRecord() != null) rows.add(op.getOldRecord());
                                 if (op.getNewRecord() != null) rows.add(op.getNewRecord());
                                 break;
@@ -95,9 +99,11 @@ public class IceBergBatchOperationHandler {
             if (recordsToWrite.isEmpty())
                 return new FlushMetrics(0, 0, Collections.emptyList(), Collections.emptyList());
 
+            // 写入分区数据文件
             List<DataFile> dataFiles = writePartitionedDataFiles(iceBergTable, recordsToWrite, tableKeyName);
             List<String> dataPaths = dataFiles.stream().map(df -> df.path().toString()).collect(Collectors.toList());
 
+            // 提交追加操作
             AppendFiles appendFiles = iceBergTable.newAppend();
             for (DataFile df : dataFiles) appendFiles.appendFile(df);
             appendFiles.commit();
@@ -110,8 +116,10 @@ public class IceBergBatchOperationHandler {
         if ("transaction".equals(Constant.icebergWriteMode)) {
 
             // ============================================================
-            // COW 模式（batch）：每批次写入时实时扫描旧文件并覆盖重写，彻底去重
-            // 适用于 Hive 3.x 等不支持 equality delete 的查询引擎
+            // COW 模式（Copy-On-Write）：实时合并模式
+            // 每批次写入时直接扫描并读取受影响的旧文件，在内存中过滤/更新后重写全文件。
+            // 优点：查询效率极高（无 delete file），适用于不支持 Merge-on-Read 的引擎（如 Hive 3.x）。
+            // 缺点：由于存在写放大，适合低频、大批量的写入场景。
             // ============================================================
             if ("batch".equals(Constant.cowMode)) {
                 log.info("[IceBergBatch][tid={}][COW] flush start table={} ops={} pkNames={}",
@@ -187,14 +195,14 @@ public class IceBergBatchOperationHandler {
                     return new FlushMetrics(newDataFiles.size(), 0, dataPaths, Collections.emptyList());
                 }
 
-                // 5. 写新的合并后 data file
+                // 5. 将受影响的旧数据 + 本次新插入数据进行合并，并写入新的 Data File
                 List<DataFile> newDataFiles = survivingRecords.isEmpty()
                         ? Collections.emptyList()
                         : writePartitionedDataFiles(iceBergTable, survivingRecords, tableKeyName);
                 List<String> dataPaths = newDataFiles.stream()
                         .map(df -> df.path().toString()).collect(Collectors.toList());
 
-                // 6. OverwriteFiles 原子提交：删旧文件，加新文件，无 delete file
+                // 6. OverwriteFiles 原子提交：确保删除旧文件的同时增加新文件
                 int maxRetry = 3;
                 for (int attempt = 1; attempt <= maxRetry; attempt++) {
                     try {
@@ -219,8 +227,9 @@ public class IceBergBatchOperationHandler {
 
             } else {
                 // ============================================================
-                // RowDelta 模式（timer / none）：写 equality delete file
-                // timer：依赖定时任务去重；none：由查询引擎处理 delete file
+                // RowDelta 模式（Row-level Delta / Merge-on-Read）：高性能写入模式
+                // 写入数据对应的 Data File 以及删除对应 PK 的 Equality Delete File。
+                // 适用于高频率、低延迟的数据同步需求。去重逻辑可交给查询引擎或定时任务（Compact）。
                 // ============================================================
                 log.info("[IceBergBatch][tid={}][RowDelta] flush start table={} ops={} pkNames={} cowMode={}",
                         Thread.currentThread().getId(), tableKeyName, allOps.size(), pkNames, Constant.cowMode);
@@ -282,6 +291,9 @@ public class IceBergBatchOperationHandler {
                 .collect(Collectors.joining("|"));
     }
 
+    /**
+     * 读取指定扫描任务中的全部数据（Parquet），并转换为 GenericRecord 列表。
+     */
     public static List<GenericRecord> readDataFile(FileScanTask task, Table table) throws Exception {
         List<GenericRecord> result = new ArrayList<>();
         org.apache.iceberg.io.InputFile inputFile = table.io().newInputFile(task.file().path().toString());
@@ -325,11 +337,13 @@ public class IceBergBatchOperationHandler {
         List<GenericRecord> finalInserts = new ArrayList<>();
         List<GenericRecord> finalDeletes = new ArrayList<>();
 
+        // 将合并后的结果按操作类型分流，准备进入写入阶段
         for (RowOperation op : mergedMap.values()) {
             switch (op.getType()) {
                 case INSERT:
                     finalInserts.add(op.getNewRecord());
-                    finalDeletes.add(op.getNewRecord()); // blind upsert：按 PK 清掉 Iceberg 里已有的旧行
+                    // 即使是 INSERT，也尝试先按主键删除已有行（Blind Upsert 保证），确保唯一性
+                    finalDeletes.add(op.getNewRecord()); 
                     break;
 
                 case DELETE:
@@ -343,6 +357,7 @@ public class IceBergBatchOperationHandler {
 
                 case UPDATE:
                     if (op.getOldRecord() != null) {
+                        // UPDATE 在 Iceberg 底层通常映射为 DELETE 旧 PK + INSERT 新数据
                         finalDeletes.add(op.getOldRecord());
                     } else {
                         log.warn("[IceBergBatch][tid={}] table={} UPDATE op oldRecord null, insert only. op={}",
@@ -400,6 +415,9 @@ public class IceBergBatchOperationHandler {
 
     // ========== 文件写入 ==========
 
+    /**
+     * 将给定的数据记录同步写入到一个单一的数据文件中（非分区感知，通常用于 Compact 或简单表）。
+     */
     public static DataFile writeDataFile(Table table,
                                          List<GenericRecord> records,
                                          String tableKeyName) throws Exception {
@@ -509,6 +527,9 @@ public class IceBergBatchOperationHandler {
         return deleteFiles;
     }
 
+    /**
+     * 核心写入逻辑：根据分区规格（PartitionSpec）将数据拆分到不同的分区路径下，并并行/顺序写入多个数据文件。
+     */
     public static List<DataFile> writePartitionedDataFiles(Table table,
                                                            List<GenericRecord> records,
                                                            String tableKeyName) throws Exception {

@@ -29,10 +29,8 @@ import java.util.*;
 import static com.jddm.boot.StartIcebergEngine.version;
 
 /**
- * className: IcebergValidator<br>
- * description: <br>
- * author: wjl<br>
- * date: 2025/5/21 14:49<br>
+ * className: IcebergValidator
+ * <p>Iceberg 链路自检工具，用于在引擎启动时验证 Hive Catalog 读写、Parquet 文件生成及事务提交是否正常。</p>
  */
 public class IcebergValidator {
     public static final String testTableName = "jddm_validation_temp_table";
@@ -40,6 +38,10 @@ public class IcebergValidator {
     public static Map<String, String> properties = new HashMap<String, String>();
     public static Schema testSchema = null;
 
+    /**
+     * 执行 Iceberg 读写全流程验证。
+     * 该方法会尝试在 default 库下创建测试表、写入单条记录并提交事务。
+     */
     public  void validateTableOperations() throws Exception {
         Table table = null;
         ImmutableList.Builder<GenericRecord> immTableBuilder = null;
@@ -102,15 +104,9 @@ public class IcebergValidator {
             throw new Exception("Iceberg operation validation failed", e);
         }
     }
-/*** *** *** ***
- * @functionName（方法名称）: createTestTable
- * @description （方法说明）: 创建测试表
- * @param       （传入参数）: null
- * @return      （返回）   : Table
- * @exception   （异常）   :
- * @author      （创建人）: wjl
- * @since       （创建时间）: 2025/5/21 15:47
- ***/
+    /**
+     * 构建包含版本信息和构建时间字段的 Iceberg 验证表。
+     */
     private static Table createTestTable(TableIdentifier tableIdentifier) {
         PartitionSpec spec = null;
         Table returnIceTable = null;
@@ -142,15 +138,9 @@ public class IcebergValidator {
 
         return returnIceTable;
     }
-    /*** *** *** ***
-     * @functionName（方法名称）: initCatalog
-     * @description （方法说明）: 初始化Hive Catalog
-     * @param       （传入参数）: null
-     * @return      （返回）   : HiveCatalog
-     * @exception   （异常）   :
-     * @author      （创建人）: wjl
-     * @since       （创建时间）: 2025/5/21 15:47
-     ***/
+    /**
+     * 初始化校验用的 Hive Catalog。
+     */
     public static void initCatalog(){
 
         Configuration conf = KerberosAuthUtil.buildHadoopConf();

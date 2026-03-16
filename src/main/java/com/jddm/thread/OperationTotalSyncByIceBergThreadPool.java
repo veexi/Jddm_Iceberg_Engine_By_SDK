@@ -24,9 +24,13 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * IceBerg engine worker: processes CDC packets, builds RowOperation list,
- * appends to IceBergSchemaImmuTableOpsMap. cflag & 1 == 1 -> before image, else -> after.
- * Trajectory mode: all I/U/D -> insert. Transaction mode: I->insert, U->update, D->delete.
+ * Iceberg 引擎核心工作线程：负责监听 CDC 数据队列，解析数据包，并将其转换为 Iceberg 可识别的 RowOperation 操作流。
+ * 
+ * 核心逻辑：
+ * 1. 镜像解析：识别 cflag 标志位。cflag & 1 == 1 通常代表前镜像（Before Image），否则为后镜像（After Image）。
+ * 2. 模式转换：
+ *    - 轨迹模式（Trajectory）：将所有 I/U/D 操作统一视为 INSERT 写入，保留完整的变更历史。
+ *    - 事务模式（Transaction）：精确映射 I -> INSERT, U -> UPDATE, D -> DELETE，维持目标表的镜像一致性。
  */
 public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
@@ -126,7 +130,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
     }
 
     /**
-     * Build RowOperation list from packet. baseOffset = pktSeq * 1M for CDC ordering.
+     * 将从 CDC 获取的原始数据包（Packet）构建为 RowOperation 列表。
+     * 每一个数据包中的每一行都会分配一个基于 pktSeq 的唯一偏移量（Offset），以确保在 Iceberg 合并阶段能严格保持原始的操作顺序。
      */
     private List<RowOperation> buildRowOperations(
             String opType,
@@ -141,7 +146,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         List<RowOperation> result = new ArrayList<>(rowsNum);
         long baseOffset = pktSeq * 1_000_000L;
 
-        // 【性能优化】使用复用的 StringBuilder 来拼接 Debug 日志，避免在循环中产生海量的小 String 对象
+        // 【性能优化】在处理大批次数据时（如单包 5-10 万行），频繁的字符串拼接会产生大量临时对象。
+        // 这里使用复用的 StringBuilder 来构建调试日志，显著降低 GC 压力，防止在高吞吐下的 OOM。
         StringBuilder debugColLogs = null;
         if (Constant.debugLogEnabled) {
             debugColLogs = new StringBuilder(1024);
@@ -252,9 +258,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                                               long offset,
                                               String tableKeyName) {
         boolean isTransaction = "transaction".equals(Constant.icebergWriteMode);
-        // [性能优化] 移除针对每一行数据的 buildOperation 日志打印。
-        // 在海量数据同步（如10万条/批）时，即使开启了 Debug，每一行都打印日志也会导致极为严重的 CPU 占用（String 拼接和 IO）以及 OOM。
-        // 如果需要调试，请依赖上层 batch 级别的 summarizeOps 日志。
+        // 【性能说明】由于本引擎处理的数据吞吐量极大，针对每一行（Row）的操作审计日志已被移除。
+        // 如需调试具体某次合并，请参考上层 batch 级别的 summarizeOps 日志。
 /*        if (Constant.debugLogEnabled) {
             log.info("[IceBergPool][tid={}] buildOperation table={} opType={} txMode={} hasNewData={} hasOldData={} offset={}", Thread.currentThread().getId(), tableKeyName, opType, isTransaction, hasNewData, hasOldData, offset);
         }*/
@@ -274,14 +279,16 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                             if (Constant.debugLogEnabled) {
                                 log.info("[IceBergPool][tid={}] UPDATE changed PK table={}: {} -> {}, splitting into DELETE + INSERT", Thread.currentThread().getId(), tableKeyName, oldPkString, newPkString);
                             }
-                            // 主键发生变更，拆分为先删后插
+                            // 关键逻辑：主键（PK）发生了变更。
+                            // 在 Iceberg 的 Equality Delete 机制下，必须先用旧主键执行 DELETE，再用新主键执行 INSERT。
+                            // 若直接按普通 UPDATE 处理，将导致旧行无法被定位删除，从而在表中产生冗余重复行。
                             List<RowOperation> splitOps = new ArrayList<>(2);
                             splitOps.add(RowOperation.delete(oldRecord, offset));
                             splitOps.add(RowOperation.insert(newRecord, offset + 1));
                             return splitOps;
                         }
 
-                        // 主键未变更，标准双镜像 UPDATE
+                        // 主键未变更：按照标准的原子“双镜像”UPDATE 处理，由下游 Handler 决定折叠方式。
                         return Collections.singletonList(RowOperation.update(oldRecord, newRecord, offset));
                     }
                     if (!hasOldData && hasNewData) {
@@ -360,17 +367,11 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
     }
 
     /**
-     * 选取用于 DELETE 的目标 record。
-     * 优先取前镜像（old），其次取后镜像（new）。
-     * 若两侧 PK 均不完整（fillRecord 异常导致 PK 字段为 null），返回 null，
-     * 调用方收到 null 后应跳过该 DELETE，避免按错误主键删行。
-     *
-     * <p>关于 setField 异常是否会丢数据：<br>
-     * fillRecord 吞掉了 setField 异常，PK 字段保持 null。
-     * isPkReady 检测到 null 返回 false，本方法返回 null，
-     * buildOperation 跳过此次 DELETE 并打 ERROR 日志。<br>
-     * 结果是：<b>该行不会被删除</b>（"漏删"而非"乱删"），数据不会因误删而丢失，
-     * 但会留下一条本应消失的脏数据，需要通过日志排查 fillRecord 的类型转换问题。
+     * 选取用于 DELETE 操作的目标 Record。
+     * 优先级：1. 有效的前镜像（old） 2. 有效的后镜像（new）。
+     * 
+     * 注意：如果数据包由于异常（如 fillRecord 转换失败）导致两侧的主键字段均为 null，
+     * 则本方法返回 null，外部逻辑将跳过此次 DELETE。这是一种“漏删”保护策略，防止因空主键导致非预期的全表或非法范围删除。
      */
     private GenericRecord chooseDeleteRecordByPk(String tableKeyName,
                                                  GenericRecord oldRecord,
@@ -434,8 +435,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         int max = Math.min(ops.size(), limit);
         for (int i = 0; i < max; i++) {
             RowOperation op = ops.get(i);
-            // DELETE op: oldRecord holds the chosen delete record (may come from after-image)
-            // Use same PK-aware fallback for display consistency
+            // DELETE 操作：对于删除记录，我们需要优先确定用于定位旧行的数据。
+            // 它是从前镜像或后镜像中选取的，目的是为了在 Iceberg 中生成正确的 Equality Delete 条件。
             GenericRecord record;
             if (op.getType() == RowOperation.OpType.DELETE) {
                 record = op.getOldRecord() != null ? op.getOldRecord() : op.getNewRecord();

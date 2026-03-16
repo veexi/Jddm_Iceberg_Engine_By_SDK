@@ -15,10 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * className: InitConfigParameter<br>
- * description: <br>
- * author: wjl<br>
- * date: 2025/5/22 15:16<br>
+ * 配置参数初始化类：负责从全局 Properties 对象中提取各类运行参数，并将其转化为引擎内部使用的强类型常量。
  */
 public class InitConfigParameter {
     public static LinkedHashMap<String,Object> parameterStrMap = new LinkedHashMap<>();
@@ -32,6 +29,7 @@ public class InitConfigParameter {
         int incrementNo = 0;
         File hdfsDir = null;
         try {
+            // 1. 设置通信监听端口
             parameterStr = GlobalConfInfo.getConf().getValue("SERVERPORT");
             if (parameterStr != null && !parameterStr.equals("")) {
                 Constant.socketServerPort = parameterStr.trim();
@@ -40,6 +38,7 @@ public class InitConfigParameter {
                 parameterStrMap.put("SERVERPORT",Constant.socketServerPort);
             }
 
+            // 2. 设置 Socket 通信的工作线程池大小
             parameterStr = GlobalConfInfo.getConf().getValue("THREADPOOLSIZE");
             if (parameterStr != null && !parameterStr.equals("")) {
                 Constant.socketThreadPoolSize = parameterStr.trim();
@@ -48,7 +47,7 @@ public class InitConfigParameter {
                 parameterStrMap.put("THREADPOOLSIZE",Constant.socketThreadPoolSize);
             }
 
-            //是否使用表分区
+            // 3. 配置 Hive/Iceberg 表分区标志，若设置了分区字段，则引擎将按照指定的物理分区路径组织数据文件
             parameterStr = GlobalConfInfo.getConf().getValue("Hive.Table.Partition.Name");
             if (parameterStr != null && !parameterStr.equals("")) {
                 ConstantPublic.setPartitionFlag = true;
@@ -77,6 +76,7 @@ public class InitConfigParameter {
                 parameterStrMap.put("Hdfs.fs.defaultFS",parameterStr.trim());
             }
 
+            // 5. 数据批次积累阈值：当单线程内存中的待同步行数达到该值时，触发一次 Iceberg Commit 操作。
             parameterStr = GlobalConfInfo.getConf().getValue("HIVE_FILE_COUNT_NO");
             if (parameterStr != null && !parameterStr.equals("")) {
                 Constant.writeCountNoToHiveFile = Integer.parseInt(parameterStr.trim());
@@ -114,6 +114,7 @@ public class InitConfigParameter {
                 }
             }
 
+            // 7. Iceberg 写入模式：trajectory (全增量历史) 或 transaction (镜像覆盖同步)
             parameterStr = GlobalConfInfo.getConf().getValue("ICEBERG_WRITE_MODE");
             if (parameterStr != null && !parameterStr.equals("")) {
                 String mode = parameterStr.trim().toLowerCase();
@@ -128,7 +129,7 @@ public class InitConfigParameter {
                 parameterStrMap.put("ICEBERG_WRITE_MODE", Constant.icebergWriteMode);
             }
 
-            // COW 去重模式：batch=每批次去重, timer=仅定时去重, none=不去重
+            // 8. COW 去重机制：batch (基于批次实时合并), timer (基于定时任务异步合并), none (交给查询端去重)
             parameterStr = GlobalConfInfo.getConf().getValue("COW_MODE");
             if (parameterStr != null && !parameterStr.equals("")) {
                 String cowMode = parameterStr.trim().toLowerCase();
@@ -195,6 +196,7 @@ public class InitConfigParameter {
                 parameterStrMap.put("HIVE_FILE_CACHE_SIZE", "128M");
             }
 
+            // 11. 引擎并发度配置：负责解析数据包的同步工作线程数量
             parameterStr = GlobalConfInfo.getConf().getValue("ENGINE_THREAD_TOTAL_SYNC_CONCURRENT");
             if (parameterStr != null && !parameterStr.equals("")) {
                 StartIcebergEngine.setTotalSyncNO(Integer.parseInt(parameterStr.trim()));

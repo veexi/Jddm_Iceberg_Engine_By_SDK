@@ -39,7 +39,6 @@ import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.core.tools.picocli.CommandLine;
 
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -58,10 +57,7 @@ import java.util.jar.Manifest;
 import static com.publics.utils.PublicOperationUtils.findAllJarFileList;
 
 /**
- * className: StartIcebergEngine<br>
- * description: <br>
- * author: wjl<br>
- * date: 2025/5/20 15:32<br>
+ * 引擎启动类：负责整个 Jddm Iceberg 引擎的生命周期管理，包括环境初始化、配置加载、模块动态载入以及核心服务（如 Socket 监听和线程池）的启动。
  */
 public class StartIcebergEngine {
     private final static String CONFIG_INFO_PATH ="config/config.properties";
@@ -70,15 +66,9 @@ public class StartIcebergEngine {
     private static int totalSyncNO=1;
     public static final String version = StartIcebergEngine.class.getPackage().getImplementationVersion();
 
-    /*** *** *** ***
-     * @functionName（方法名称）: main
-     * @description （方法说明）: 启动入口
-     * @param       （传入参数）: String[] args
-     * @return      （返回）   : null
-     * @exception   （异常）   : Exception
-     * @author      （创建人）: mjddw
-     * @since       （创建时间）: 2025/5/22 16:55
-     ***/
+    /**
+     * 引擎主入口：负责加载本地配置、设置系统路径、初始化 Catalog 驱动并启动数据同步主引擎。
+     */
     public static void main(String[] args) throws Exception {
         Logger log = LogManager.getLogger(StartIcebergEngine.class);
         Properties properties = new Properties();
@@ -272,15 +262,9 @@ public class StartIcebergEngine {
 
 
     }
-/*** *** *** ***
- * @functionName（方法名称）: initializeServices
- * @description （方法说明）: 初始化各个服务
- * @param       （传入参数）: null
- * @return      （返回）   : boolean
- * @exception   （异常）   : InitializationException
- * @author      （创建人）: mjddw
- * @since       （创建时间）: 2025/5/22 16:53
- ***/
+    /**
+     * 服务初始化：配置核心业务服务，包括 Kerberos 认证、元数据预加载、信号处理器注册以及各类任务调度线程池。
+     */
 private static boolean initializeServices() throws InitializationException {
     boolean returnFlag = false;
     ExecutorService fixedThreadPool = null;
@@ -366,7 +350,8 @@ private static boolean initializeServices() throws InitializationException {
     }*/
 
     /**
-     * 启动时从 SQLite 预加载全量表字典，使重启后 DML 无需等待 DDL 即可处理
+     * SQLite 元数据预加载：在引擎启动初期，主动从本地 SQLite 数据库中恢复表字典信息。
+     * 这样做能够确保在引擎重启后，即使 DDL 信号尚未到达，DML 数据包也能根据已有的元数据立即开始处理，提高系统可用性。
      */
     private static void preloadTableDictFromSqlite() {
         Logger log = LogManager.getLogger(StartIcebergEngine.class);
@@ -479,20 +464,31 @@ private static boolean initializeServices() throws InitializationException {
         log.info("...");
     }
 
+    /**
+     * 获取程序的构建时间信息。
+     * 逻辑：通过读取 jar 包内的 MANIFEST.MF 元数据获取 Build-Timestamp，并转换为北京时间（+08:00）显示。
+     */
     public static String getBuildTimeString(){
-        String returnTime = "";
+        String returnTime = "N/A";
         try (InputStream in =
                      StartIcebergEngine.class.getClassLoader()
                              .getResourceAsStream("META-INF/MANIFEST.MF")) {
+            if (in == null) {
+                return returnTime;
+            }
             Manifest mf = new Manifest(in);
             String timestamp = mf.getMainAttributes()
                     .getValue("Build-Timestamp");
+            if (timestamp == null || timestamp.isEmpty()) {
+                return returnTime;
+            }
             OffsetDateTime utc = OffsetDateTime.parse(timestamp);
             // 2. 改变偏移量到 +08:00（同一时刻）
             OffsetDateTime beijing = utc.withOffsetSameInstant(ZoneOffset.ofHours(8));
             returnTime = beijing.format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        } catch (Exception e) {
+            // Log or ignore instead of throwing RuntimeException to prevent startup failure
+            returnTime = "N/A";
         }
         return returnTime;
     }

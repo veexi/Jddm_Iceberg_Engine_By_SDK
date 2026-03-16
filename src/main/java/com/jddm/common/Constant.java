@@ -5,27 +5,43 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public class Constant {
 
+	/** Hive Metastore 通信地址 (Thrift 协议) */
 	public static String hiveMetastoreUris="";
+	/** 引擎自定义错误状态码，用于与外部监控系统通信 */
 	public static volatile int customJddmEngineErrorFlag = 0;
+	/** 引擎类型标识信息，显示在日志头部 */
 	public static String JddmEngineTypeInfo="";
+	/** SQLite 中 DDL 重新加载任务的缓存 Key */
 	public static String reloadKeyName="reLoadeKey";
 
-	//2023/1/4 3:59 PM; Auth:JH 增加hive是否
+	/** 是否启用基于本地服务器时间的自动分区（主要用于无源表分区时的补齐） */
 	public static boolean  hiveTablePartitionUsingLocalTimerFlag=false;
+	/** 分区时间格式，如 yyyyMMdd */
 	public static String  hiveTablePartitionLocalTimerFormatter="";
+	/** 单批次累积记录数阈值，达到此值后将触发数据刷盘和 Iceberg 事务提交 */
 	public static int writeCountNoToHiveFile=10000;
+	/** HDFS 基础路径或 NameNode 地址，如 hdfs://nameservice1 */
 	public static String fsDefaultInfo="";
+	/** 默认目标数据库名称 */
 	public static String settingDataBaseName="";
-	//2023/9/19 16:18 PM; Auth:JH;
+	/** Hive 表状态检查重试次数 */
 	public static Integer hiveDiffTimers=5;
+	/** 引擎程序当前的物理工作目录 */
 	public static String basicWorkPath="";
+	/** 引擎接收 DML 包的 Socket 服务端口 */
 	public static String socketServerPort="8313";
+	/** 刷盘批次的最大记录上限，防止单个事务过大导致内存溢出 */
 	public static final int flushBatchMaxSize = 100000;
 
+	/** Socket 服务的处理线程池并发数 */
 	public static String socketThreadPoolSize="20";
+	/** 引擎基础日志级别控制 */
 	public static int LOG_AGENT_LEVEL=1000;
+	/** 数据同步开关，通过 AtomicBoolean 确保多线程下的原子可见性 */
 	public static final AtomicBoolean writeToIceBergDBFlag = new AtomicBoolean(true);
+	/** 是否启用 Kafka 监控指标入库 */
 	public static boolean kafkaMonitorToDBType=false;
+	/** 本地服务器 IP 地址缓存 */
 	public static String localHostIpAddress="";
 
 	/** Iceberg mode: trajectory=append-only, transaction=CRUD+RowDelta */
@@ -39,11 +55,11 @@ public class Constant {
 
 	/**
 	 * COW 去重模式，由 COW_MODE 控制：
-	 * batch  = 每批次写入时实时去重（默认，数据强一致，写性能略低）
+	 * batch  = 每批次写入时实时去重
 	 * timer  = 仅定时任务去重（写性能高，依赖 compactDedupEnabled=true）
-	 * none   = 不去重（纯 RowDelta 模式，需要查询引擎支持 equality delete）
+	 * none   = 不去重（默认，纯 RowDelta 模式，避免大表重写性能隐患，需要查询引擎支持 equality delete）
 	 */
-	public static String cowMode = "batch";
+	public static String cowMode = "none";
 
 	/**
 	 * 定时任务是否执行去重合并，由 COMPACT_DEDUP_ENABLED 控制。
@@ -54,9 +70,9 @@ public class Constant {
 
 	/**
 	 * 定时任务是否执行小文件合并，由 COMPACT_SMALL_FILES_ENABLED 控制。
-	 * 默认 true。
+	 * 默认 false（避免大表扫描合并性能隐患）。
 	 */
-	public static boolean compactSmallFilesEnabled = true;
+	public static boolean compactSmallFilesEnabled = false;
 
 	/**
 	 * Log level switch loaded from config.properties ENGINE_LOG_LEVEL.

@@ -12,15 +12,14 @@ import java.lang.reflect.Method;
 import java.net.MalformedURLException;
 
 /**
- * Kerberos 认证工具类。
+ * Kerberos 认证与安全工具类。
  *
- * <p>所有方法内部统一判断 {@link Constant#kerberosEnabled} 开关：
+ * <p>该工具类高度抽象了 Hadoop 生态下的 Kerberos 认证逻辑，通过 {@link Constant#kerberosEnabled} 开关
+ * 统一控制安全行为。主要功能包括：
  * <ul>
- *   <li>开关=false：方法静默跳过，返回普通空配置，调用方无感知。</li>
- *   <li>开关=true：执行完整 Kerberos 流程。</li>
+ *   <li><b>配置构建：</b> 动态加载本地 config 目录下的 XML 配置，忽略系统环境变量干扰。</li>
+ *   <li><b>生命周期管理：</b> 提供一次性的 Keytab 登录入口以及后续的 TGT 令牌定时续约逻辑。</li>
  * </ul>
- *
- * <p>调用方只需直接调用，无需在外部再加 if/else 判断。
  */
 public class KerberosAuthUtil {
 
