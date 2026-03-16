@@ -1,4 +1,5 @@
 package com.jddm.conf;
+import com.jddm.common.Constant;
 import com.jddm.vo.RowOperation;
 import com.jddm.vo.SequencedPackage;
 import org.apache.iceberg.Schema;
@@ -26,7 +27,7 @@ public class GlobalSetConfInfo {
     public static Map<String,String> IceBergTableCacheFileMap = new ConcurrentHashMap<>();
     public static Map<String,Boolean> IceBergOperationCompleteMap = new ConcurrentHashMap<String,Boolean>();
     public static Map<String,AtomicInteger> IceBergOperationBeginMap = new ConcurrentHashMap<String,AtomicInteger>();
-    public static ArrayBlockingQueue<SequencedPackage> icebergEngineOperationQueue = new ArrayBlockingQueue(10000);
+    public static ArrayBlockingQueue<SequencedPackage> icebergEngineOperationQueue = new ArrayBlockingQueue(Constant.icebergOperationQueueSize);
     public static Map<String, List<String>> TablePkColCacheMap = new ConcurrentHashMap<>();
 
 

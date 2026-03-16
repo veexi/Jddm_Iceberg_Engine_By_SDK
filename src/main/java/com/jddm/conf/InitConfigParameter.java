@@ -69,6 +69,11 @@ public class InitConfigParameter {
                 log.info("");
                 System.exit(0);
             }
+            parameterStr = GlobalConfInfo.getConf().getValue("TEST_ICEBERG_OPERATION_QUEUE");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                Constant.icebergOperationQueueSize = Integer.getInteger(parameterStr.trim());
+                parameterStrMap.put("TEST_ICEBERG_OPERATION_QUEUE",parameterStr.trim());
+            }
 
             parameterStr = GlobalConfInfo.getConf().getValue("Hdfs.fs.defaultFS");
             if (parameterStr != null && !parameterStr.equals("")) {

@@ -90,4 +90,5 @@ public class Constant {
 	public static String hdfsNamenodePrincipal = "";
 	public static String hiveMetastorePrincipal = "";
 	public static boolean dropTableFlag = false;
+	public static int icebergOperationQueueSize = 10000;
 }

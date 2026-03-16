@@ -4,6 +4,7 @@ import com.jddm.common.Constant;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
 import com.jddm.vo.RowOperation;
+import com.jddm.operation.timer.IcebergFullLoadAsyncCommitter;
 import org.apache.hadoop.fs.Path;
 import org.apache.iceberg.*;
 import org.apache.iceberg.data.GenericRecord;
@@ -21,6 +22,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.Closeable;
+import java.io.File;
 import java.util.*;
 import java.util.concurrent.LinkedBlockingDeque;
 import java.util.stream.Collectors;
@@ -110,7 +112,7 @@ public class IceBergBatchOperationHandler {
         // ★ 改动：全量 insert（rawOpType="i"）快速路径，跳过 mergeByPrimaryKey 和 delete 文件生成
         boolean isFullLoad = allOps.stream().allMatch(RowOperation::isFullLoad);
         if (isFullLoad) {
-            log.info("[IceBergBatch][tid={}][FullLoad] detected full load, skip merge/dedup table={} ops={}",
+            log.info("[IceBergBatch][tid={}][FullLoad] detected full load, intercepted for local cache. table={} ops={}",
                     Thread.currentThread().getId(), tableKeyName, allOps.size());
 
             List<GenericRecord> records = allOps.stream()
@@ -122,27 +124,28 @@ public class IceBergBatchOperationHandler {
                 return new FlushMetrics(0, 0, Collections.emptyList(), Collections.emptyList());
             }
 
-            // ★ 加写入耗时
+            // ★ 核心改动：不再直接写 HDFS，而是写本地缓存
             long writeStart = System.currentTimeMillis();
-            List<DataFile> dataFiles = writePartitionedDataFiles(iceBergTable, records, tableKeyName);
+            List<DataFile> dataFiles = writePartitionedDataFilesToLocal(iceBergTable, records, tableKeyName);
             long writeEnd = System.currentTimeMillis();
 
             List<String> dataPaths = dataFiles.stream()
-                    .map(df -> df.path().toString()).collect(Collectors.toList());
+                    .map(df -> "[LOCAL]" + df.path().toString()).collect(Collectors.toList());
 
-            // ★ 加提交耗时
-            long commitStart = System.currentTimeMillis();
-            AppendFiles appendFiles = iceBergTable.newAppend();
-            for (DataFile df : dataFiles) appendFiles.appendFile(df);
-            appendFiles.commit();
-            long commitEnd = System.currentTimeMillis();
+            // ★ 核心改动：不再进行 Commit，而是记录元数据，交给异步线程处理
+            long cacheStart = System.currentTimeMillis();
+            for (DataFile df : dataFiles) {
+                File localFile = new File(df.path().toString());
+                IcebergFullLoadAsyncCommitter.saveToLocalCache(tableKeyName, df, localFile);
+            }
+            long cacheEnd = System.currentTimeMillis();
 
-            log.info("[IceBergBatch][tid={}][FullLoad] append commit ok table={} rows={} " +
-                            "writeMs={} commitMs={} totalMs={} dataFiles={}",
+            log.info("[IceBergBatch][tid={}][FullLoad] local cache ok table={} rows={} " +
+                            "writeMs={} cacheMs={} totalMs={} dataFiles={}",
                     Thread.currentThread().getId(), tableKeyName, records.size(),
                     writeEnd - writeStart,
-                    commitEnd - commitStart,
-                    commitEnd - writeStart,
+                    cacheEnd - cacheStart,
+                    cacheEnd - writeStart,
                     dataPaths);
             return new FlushMetrics(dataFiles.size(), 0, dataPaths, Collections.emptyList());
         }
@@ -591,6 +594,62 @@ public class IceBergBatchOperationHandler {
             } catch (Exception e) {
                 log.error("[IceBergBatch][tid={}] Error writing data file: {}, tableKeyName={}",
                         Thread.currentThread().getId(), outputFile.location(), tableKeyName, e);
+                throw e;
+            } finally {
+                appender.close();
+            }
+
+            DataFiles.Builder builder = DataFiles.builder(spec)
+                    .withInputFile(outputFile.toInputFile())
+                    .withMetrics(appender.metrics())
+                    .withFormat(FileFormat.PARQUET);
+
+            if (isPartitioned) builder.withPartition(entry.getKey());
+            dataFiles.add(builder.build());
+        }
+        return dataFiles;
+    }
+
+    public static List<DataFile> writePartitionedDataFilesToLocal(Table table,
+                                                                  List<GenericRecord> records,
+                                                                  String tableKeyName) throws Exception {
+        if (records == null || records.isEmpty()) return Collections.emptyList();
+
+        PartitionSpec spec = table.spec();
+        boolean isPartitioned = spec.isPartitioned();
+
+        Map<PartitionKey, List<GenericRecord>> partitionMap = new HashMap<>();
+        PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
+
+        for (GenericRecord record : records) {
+            if (isPartitioned) reusablePKey.partition(record);
+            partitionMap.computeIfAbsent(reusablePKey.copy(), k -> new ArrayList<>()).add(record);
+        }
+
+        List<DataFile> dataFiles = new ArrayList<>();
+        File cacheDir = new File(Constant.basicWorkPath, "FileCache/" + tableKeyName);
+        if (!cacheDir.exists()) cacheDir.mkdirs();
+
+        for (Map.Entry<PartitionKey, List<GenericRecord>> entry : partitionMap.entrySet()) {
+            File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
+            log.info("[IceBergBatch][tid={}] writing full load to local: {}",
+                    Thread.currentThread().getId(), localFile.getAbsolutePath());
+
+            // ★ 关键：使用 Files.localOutput 绕过 HDFS，直接写本地磁盘
+            org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
+
+            FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                    .schema(table.schema())
+                    .createWriterFunc(GenericParquetWriter::buildWriter)
+                    .build();
+
+            try {
+                for (GenericRecord row : entry.getValue()) {
+                    appender.add(row);
+                }
+            } catch (Exception e) {
+                log.error("[IceBergBatch][tid={}] Error writing local cache file: {}, table={}",
+                        Thread.currentThread().getId(), localFile.getAbsolutePath(), tableKeyName, e);
                 throw e;
             } finally {
                 appender.close();

@@ -298,6 +298,8 @@ private static boolean initializeServices() throws InitializationException {
         scheduledThreadPool.scheduleAtFixedRate(
                 KerberosAuthUtil::renewTgtIfNeeded, 1, 1, TimeUnit.HOURS);
 
+        // 启动全量数据异步提交线程
+        Executors.newSingleThreadExecutor().execute(new com.jddm.operation.timer.IcebergFullLoadAsyncCommitter());
 
         fixedThreadPool = Executors.newFixedThreadPool(50);
         for (int i = 0; i < totalSyncNO; i++) {
