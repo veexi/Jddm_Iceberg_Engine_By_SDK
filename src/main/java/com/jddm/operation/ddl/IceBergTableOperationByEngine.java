@@ -65,7 +65,7 @@ public class IceBergTableOperationByEngine {
 		List<TableColumnVo> yloaderColumnList = new ArrayList<TableColumnVo>();
 		
 		if(ConstantPubSet.logForAgentType == 2000){
-	    	log.info(" ICEBerg Schema ::"+tableInfoVo.getOwner().toLowerCase()+" TName ::"+tableInfoVo.getTableName().toLowerCase()+" tableSpace ::"+tableInfoVo.getTableSpace());
+	    	log.info("[DDL] ICEBerg Schema ::"+tableInfoVo.getOwner().toLowerCase()+" TName ::"+tableInfoVo.getTableName().toLowerCase()+" tableSpace ::"+tableInfoVo.getTableSpace());
 	    }
 
 
@@ -84,7 +84,7 @@ public class IceBergTableOperationByEngine {
                 for(Integer pkNo :pkColumnList){
                     
                     if(pkNo == columnVo.getColumnNo()){
-                        log.info("Table: {} ,PrimaryKeyName: {} ,pkNo: {}",setTableKeyName,columnVo.getColumnName().toLowerCase(),pkNo);
+                        log.info("[DDL] Table: {} ,PrimaryKeyName: {} ,pkNo: {}",setTableKeyName,columnVo.getColumnName().toLowerCase(),pkNo);
                         pkColumnMap.put(columnVo.getColumnName().toLowerCase(), pkNo+"");
                         break;
                     }
@@ -119,7 +119,7 @@ public class IceBergTableOperationByEngine {
 			TableColumnVo tableColumnVo=null;
 			for(Map.Entry<String, String> addColMap:thisTableColMap.entrySet()){
 				
-				log.info(" List_Size ::"+columnList.size()+" ################ ADD COLUMN ::"+addColMap.getKey()+" Type ::"+addColMap.getValue());
+				log.info("[DDL] List_Size ::"+columnList.size()+" ################ ADD COLUMN ::"+addColMap.getKey()+" Type ::"+addColMap.getValue());
 				
 				if(ConstantPublic.setPartitionFlag){
 					if(addColMap.getKey().equalsIgnoreCase(ConstantPublic.setTablePartitionColName)){
@@ -163,7 +163,7 @@ public class IceBergTableOperationByEngine {
 		
 		for( TableColumnVo columnVo: columnList){
 			if (ConstantPubSet.logForAgentType == 2000) {
-				log.info(" --dict[ALL FieldType]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
+				log.info("[DDL] --dict[ALL FieldType]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
 
 			}
 
@@ -171,14 +171,14 @@ public class IceBergTableOperationByEngine {
             if(columnVo.isAddColFlag()) {
                 if(ConstantPublic.setPartitionFlag){
                     if(columnVo.getColumnName().toLowerCase().equalsIgnoreCase(ConstantPublic.setTablePartitionColName)){
-                        log.info(" JddmEngine ######## Partition COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
+                        log.info("[DDL] JddmEngine ######## Partition COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
                         yloaderColumnList.add(columnVo);
                         continue;
                     }else {
-                        log.info(" JddmEngine ######## Partition ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
+                        log.info("[DDL] JddmEngine ######## Partition ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
                     }
                 }else {
-                    log.info(" JddmEngine ################ ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
+                    log.info("[DDL] JddmEngine ################ ADD COLUMN ::"+columnVo.getColumnName().toLowerCase()+" Type ::"+columnVo.getColumnType());
                 }
 
                 if(columnVo.getColComment() !=null) {
@@ -193,7 +193,7 @@ public class IceBergTableOperationByEngine {
             }
 		}
 		
-		log.info(" JDDM_ICEBERG_HIVE_Engine List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
+		log.info("[DDL] JDDM_ICEBERG_Engine List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
 	    
 		if(Constant.settingDataBaseName !=null && !Constant.settingDataBaseName.equals("")) {
 			hiveExtTableName = Constant.settingDataBaseName+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
@@ -202,7 +202,7 @@ public class IceBergTableOperationByEngine {
 		}
 		
 		
-		log.info(" JDDM_ICEBERG_HIVE_Engine hiveTable::["+hiveExtTableName+"] List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
+		log.info("[DDL] JDDM_ICEBERG_Engine Table::["+hiveExtTableName+"] List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
 		
 		if(ConstantPublic.setPartitionFlag){
 			insertSelectString.append("INSERT INTO "+hiveExtTableName+ " partition("+ConstantPublic.setTablePartitionColName+"=@dsg_date@) ( ");
@@ -239,7 +239,7 @@ public class IceBergTableOperationByEngine {
 
 
 			if (ConstantPubSet.logForAgentType == 2000) {
-				log.info(" --reload[ALL FieldType]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
+				log.info("[DDL] --reload[ALL FieldType]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
 
 			}
             // 关键逻辑：类型映射与主键强制约束。
@@ -279,7 +279,7 @@ public class IceBergTableOperationByEngine {
 					break;
                 case 2:
 						
-					log.info(" --reload[FieldType.BIGINT]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
+					log.info("[DDL] --reload[FieldType.BIGINT]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" NumberType ::"+columnVo.getNumberType()+" columnNo ::"+columnVo.getColumnNo()+" commons ::"+columnVo.getColComment()+" ("+columnVo.getColumnLen()+","+columnVo.getColPrecision()+")");
 					
 					switch(columnVo.getNumberType()) {
 						case 1000: //NUMBER
@@ -408,7 +408,7 @@ public class IceBergTableOperationByEngine {
                     break;
                 default:
 						//log.info(" columnType ::"+columnVo.getColumnType());
-					log.info(" --reload columnType["+columnVo.getColumnType()+"]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
+					log.info("[DDL] --reload columnType["+columnVo.getColumnType()+"]-- >>> "+columnVo.getColumnName().toLowerCase()+" value ::"+columnVo.getColumnType()+" columnNo ::"+columnVo.getColumnNo());
 					break;
 			}
 		}
@@ -425,7 +425,7 @@ public class IceBergTableOperationByEngine {
 		}
 		
 		iceBergSchema = new Schema(iceBergTablefields);
-		log.info("------>>> Create Schema Sql::"+iceBergSchema.toString());
+		log.info("[DDL] Successfully created Schema: "+iceBergSchema.toString());
 
 		GlobalSetConfInfo.IceBergSchemaCahceMap.put(setTableKeyName, iceBergSchema);
 		
@@ -461,7 +461,7 @@ public class IceBergTableOperationByEngine {
 // 有主键的表开启 merge-on-read，支持 equality delete
 
             catalog.initialize("hive", properties);
-            log.info("------>>> Original config fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo, Constant.hiveMetastoreUris);
+            log.info("[DDL] Original config fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo, Constant.hiveMetastoreUris);
 /*            StringBuilder confSb = new StringBuilder();
             for (Map.Entry<String, String> entry : catalog.getConf()) {
                 if (entry.getKey().startsWith("fs.") || entry.getKey().startsWith("dfs.") || entry.getKey().startsWith("hive.") || entry.getKey().startsWith("hadoop.")) {
@@ -469,7 +469,7 @@ public class IceBergTableOperationByEngine {
                 }
             }*/
 //            log.info("------>>> Read from HiveCatalog Conf (fs/dfs/hive/hadoop) :\n{}", confSb.toString());
-            log.info("------>>> HiveCatalog Initialize Properties : {}", properties);
+            log.info("[DDL] HiveCatalog Initialize Properties : {}", properties);
 
             // 第四步：构建分区规格（Partition Spec）。
             // 采用 Identity 分区，即 Data File 的目录结构直接由分区字段的值决定。
@@ -493,9 +493,9 @@ public class IceBergTableOperationByEngine {
             //如果库不存在，则创建它
             if (!catalog.namespaceExists(ns)) {
                 catalog.createNamespace(ns);
-                log.info("Created missing namespace: {}", ns);
+                log.info("[DDL] Created missing namespace: {}", ns);
             }
-			log.info("------>>> Create Table Sql:: "+tableIdentifier);
+            log.info("[DDL] Begin creating Iceberg table name: {}", tableIdentifier);
 			boolean isTableExists = false;
 			try {
 				isTableExists = catalog.tableExists(tableIdentifier);
@@ -528,6 +528,7 @@ public class IceBergTableOperationByEngine {
                     log.info("[DDL] table={} pk={} set merge-on-read", setTableKeyName, pkNames);
                 }
                 iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
+                log.info("[DDL] Successfully created Iceberg table: {}", tableIdentifier);
                 GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
 			}else {
 				if(Constant.dropTableFlag){
@@ -542,18 +543,18 @@ public class IceBergTableOperationByEngine {
                         log.info("[DDL] table={} pk={} set merge-on-read", setTableKeyName, pkNames);
                     }
 					iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
+					log.info("[DDL] Successfully recreated Iceberg table: {}", tableIdentifier);
 					GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
 				}else {
 					iceBergTable = catalog.loadTable(tableIdentifier);
-					
+					log.info("[DDL] Successfully loaded existing Iceberg table: {}", tableIdentifier);
 					GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
 				}
 			}
 
 			socketReturnVo.setReturnFlag(true);
 			socketReturnVo.setRowsNo(1);
-			socketReturnVo.setTradeType("kafkaTable");
-			
+			log.info("[DDL] Finished importHiveTable_IceBerg_Table for table: {}", setTableKeyName);
 			return socketReturnVo;
 		    
 		} catch (Exception e) {
