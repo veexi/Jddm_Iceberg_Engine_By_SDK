@@ -14,7 +14,9 @@ public class RowOperation {
         DELETE,
         UPDATE
     }
-
+    private boolean fullLoad = false;
+    public boolean isFullLoad() { return fullLoad; }
+    public void setFullLoad(boolean fullLoad) { this.fullLoad = fullLoad; }
     private final OpType type;
 
     /** INSERT/UPDATE 操作产生的新记录流；DELETE 操作下通常为 null */

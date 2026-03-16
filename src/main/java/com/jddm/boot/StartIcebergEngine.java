@@ -65,6 +65,8 @@ public class StartIcebergEngine {
     private static  String hiveFilePath = "hdfsFile";
     private static int totalSyncNO=1;
     public static final String version = StartIcebergEngine.class.getPackage().getImplementationVersion();
+    private static final long MIN_FREE_HEAP_BYTES = 2 * 1024 * 1024 * 1024L; // 512MB 安全水位
+
 
     /**
      * 引擎主入口：负责加载本地配置、设置系统路径、初始化 Catalog 驱动并启动数据同步主引擎。
@@ -241,7 +243,8 @@ public class StartIcebergEngine {
                                 try {
                                     // 核心修复：单线程接收端立即分配序列号，消除多线程分配时的竞态乱序
                                     long pktSeq = GlobalConfInfo.icebergEngineOperationSeq.getAndIncrement();
-                                    GlobalSetConfInfo.icebergEngineOperationQueue.put(new SequencedPackage((PackageReturnVo) item, pktSeq));
+                                    putWithMemoryGuard(
+                                            new SequencedPackage((PackageReturnVo) item, pktSeq));
                                 } catch (InterruptedException e) {
                                     throw new RuntimeException(e);
                                 }
@@ -547,5 +550,18 @@ private static boolean initializeServices() throws InitializationException {
         } else {
             return localip;
         }
+    }
+    private static void putWithMemoryGuard(SequencedPackage item) throws InterruptedException {
+        Runtime rt = Runtime.getRuntime();
+        while (true) {
+            long freeHeap = rt.freeMemory() + (rt.maxMemory() - rt.totalMemory());
+            if (freeHeap >= MIN_FREE_HEAP_BYTES) {
+                break;
+            }
+            System.out.printf("[MemGuard] heap low, block producer. freeHeap=%dMB%n",
+                    freeHeap / 1024 / 1024);
+            Thread.sleep(200);
+        }
+        GlobalSetConfInfo.icebergEngineOperationQueue.put(item);
     }
 }
