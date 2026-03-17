@@ -106,7 +106,9 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
         FullLoadMeta meta = mapper.readValue(metaFile, FullLoadMeta.class);
 
         // 2. 准备 HDFS 路径
-        String hdfsDestPath = table.location() + "/data/" + tableKey.replace(".", "/") + "/" + meta.fileName;
+        StringBuilder hdfsSb = new StringBuilder(table.location());
+        hdfsSb.append("/data/").append(tableKey.replace(".", "/")).append("/").append(meta.fileName);
+        String hdfsDestPath = hdfsSb.toString();
 
         // 3. 上传 HDFS
         FileSystem fs = getOrCreateFs(table, tableKey);

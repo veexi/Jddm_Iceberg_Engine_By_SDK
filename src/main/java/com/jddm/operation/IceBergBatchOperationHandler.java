@@ -309,10 +309,17 @@ public class IceBergBatchOperationHandler {
 
     // ========== COW 辅助方法 ==========
 
+    private static final ThreadLocal<StringBuilder> PK_SB_CACHE = ThreadLocal.withInitial(() -> new StringBuilder(512));
+
     public static String buildPkString(GenericRecord r, List<String> pkNames) {
-        return pkNames.stream()
-                .map(pk -> r.getField(pk) == null ? "__NULL__" : r.getField(pk).toString())
-                .collect(Collectors.joining("|"));
+        StringBuilder sb = PK_SB_CACHE.get();
+        sb.setLength(0);
+        for (int i = 0; i < pkNames.size(); i++) {
+            if (i > 0) sb.append("|");
+            Object val = r.getField(pkNames.get(i));
+            sb.append(val == null ? "__NULL__" : val.toString());
+        }
+        return sb.toString();
     }
 
     public static List<GenericRecord> readDataFile(FileScanTask task, Table table) throws Exception {
@@ -563,8 +570,9 @@ public class IceBergBatchOperationHandler {
 
         List<DataFile> dataFiles = new ArrayList<>();
         for (Map.Entry<PartitionKey, List<GenericRecord>> entry : partitionMap.entrySet()) {
-            String pathStr = new Path(table.location(), "data/" + tableKeyName.replace(".", "/")
-                    + "/" + UUID.randomUUID() + ".parquet").toString();
+            StringBuilder pathSb = new StringBuilder(table.location());
+            pathSb.append("/data/").append(tableKeyName.replace(".", "/")).append("/").append(UUID.randomUUID()).append(".parquet");
+            String pathStr = pathSb.toString();
             OutputFile outputFile;
             try {
                 outputFile = table.io().newOutputFile(pathStr);
@@ -603,6 +611,18 @@ public class IceBergBatchOperationHandler {
         return dataFiles;
     }
 
+    private static class WriterContext {
+        File localFile;
+        org.apache.iceberg.io.OutputFile outputFile;
+        FileAppender<GenericRecord> appender;
+
+        WriterContext(File localFile, org.apache.iceberg.io.OutputFile outputFile, FileAppender<GenericRecord> appender) {
+            this.localFile = localFile;
+            this.outputFile = outputFile;
+            this.appender = appender;
+        }
+    }
+
     public static List<DataFile> writePartitionedDataFilesToLocal(Table table,
                                                                   List<RowOperation> allOps,
                                                                   String tableKeyName) throws Exception {
@@ -613,84 +633,114 @@ public class IceBergBatchOperationHandler {
         File cacheDir = new File(Constant.basicWorkPath, "FileCache/" + tableKeyName);
         if (!cacheDir.exists()) cacheDir.mkdirs();
 
-        // 非分区表：直接流式写，零中间 List
-        if (!isPartitioned) {
-            File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
-            log.info("[IceBergBatch][tid={}] writing full load to local: {}",
-                    Thread.currentThread().getId(), localFile.getAbsolutePath());
+        // 策略：针对宽表自适应调优 Parquet 参数
+        int colCount = table.schema().columns().size();
+        String rowGroupSize = "134217728"; // 默认 128MB
+        String pageSize = "1048576";     // 默认 1MB
+        if (colCount > 100) {
+            log.info("[IceBergBatch][tid={}] Wide table detected (cols={}), tuning Parquet memory for safety.",
+                    Thread.currentThread().getId(), colCount);
+            rowGroupSize = "33554432"; // 宽表降至 32MB，强制频繁刷盘释放内存
+            pageSize = "524288";      // 页大小降至 512KB
+        }
 
+        List<DataFile> resultDataFiles = new ArrayList<>();
+
+        if (!isPartitioned) {
+            // ================== 非分区表流式直写 ==================
+            File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
             org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
 
+            FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                    .schema(table.schema())
+                    .createWriterFunc(GenericParquetWriter::buildWriter)
+                    .set("write.parquet.compression-codec", "snappy")
+                    .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                    .set("write.parquet.page-size-bytes", pageSize)
+                    .build();
 
-            Metrics metrics;
-
-                FileAppender<GenericRecord> appender = Parquet.write(outputFile)
-                        .schema(table.schema())
-                        .createWriterFunc(GenericParquetWriter::buildWriter)
-                        .set("write.parquet.compression-codec", "snappy")
-                        .build();
-                try {
-                    for (int i = 0; i < allOps.size(); i++) {
-                        GenericRecord rec = allOps.get(i).getNewRecord();
-                        if (rec != null) appender.add(rec);
-                        allOps.set(i, null); // ★ 写完这条立刻断开引用，让 GC 能回收
+            try {
+                for (int i = 0; i < allOps.size(); i++) {
+                    GenericRecord rec = allOps.get(i).getNewRecord();
+                    if (rec != null) {
+                        appender.add(rec);
                     }
-                } finally {
-                    appender.close();
+                    allOps.set(i, null); // ★ 核心：写完立即断开强引用，让 600 列的数据对象在 YGC 中被回收
                 }
-                metrics = appender.metrics();
-
+            } finally {
+                appender.close();
+            }
 
             DataFile df = DataFiles.builder(spec)
                     .withInputFile(outputFile.toInputFile())
-                    .withMetrics(metrics)
+                    .withMetrics(appender.metrics())
                     .withFormat(FileFormat.PARQUET)
                     .build();
-            return Collections.singletonList(df);
-        }
+            resultDataFiles.add(df);
 
-        // 分区表：需要按分区归组，但归组后立刻写，不同时持有所有分区数据
-        Map<PartitionKey, List<RowOperation>> partitionMap = new HashMap<>();
-        PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
-        for (RowOperation op : allOps) {
-            GenericRecord rec = op.getNewRecord();
-            if (rec == null) continue;
-            reusablePKey.partition(rec);
-            partitionMap.computeIfAbsent(reusablePKey.copy(), k -> new ArrayList<>()).add(op);
-        }
-        allOps.clear(); // ★ 分完区之后原始列表立刻释放
+        } else {
+            // ================== 分区表流式并行直写 ==================
+            // 维护本批次所有分区的 Writer 上下文
+            Map<PartitionKey, WriterContext> writersMap = new HashMap<>();
+            PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
 
-        List<DataFile> dataFiles = new ArrayList<>();
-        for (Map.Entry<PartitionKey, List<RowOperation>> entry : partitionMap.entrySet()) {
-            File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
-            org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
-
-            Metrics metrics;
-                FileAppender<GenericRecord> appender = Parquet.write(outputFile)
-                        .schema(table.schema())
-                        .createWriterFunc(GenericParquetWriter::buildWriter)
-                        .set("write.parquet.compression-codec", "snappy")
-                        .build();
-                List<RowOperation> partOps = entry.getValue();
-                try {
-                    for (int i = 0; i < partOps.size(); i++) {
-                        GenericRecord rec = partOps.get(i).getNewRecord();
-                        if (rec != null) appender.add(rec);
-                        partOps.set(i, null); // ★ 写完立刻释放
+            try {
+                for (int i = 0; i < allOps.size(); i++) {
+                    RowOperation op = allOps.get(i);
+                    GenericRecord rec = op.getNewRecord();
+                    if (rec == null) {
+                        allOps.set(i, null);
+                        continue;
                     }
-                } finally {
-                    appender.close();
-                }
-                metrics = appender.metrics();
 
-            DataFiles.Builder builder = DataFiles.builder(spec)
-                    .withInputFile(outputFile.toInputFile())
-                    .withMetrics(metrics)
-                    .withFormat(FileFormat.PARQUET)
-                    .withPartition(entry.getKey());
-            dataFiles.add(builder.build());
+                    // 1. 计算分区
+                    reusablePKey.partition(rec);
+                    PartitionKey currentKey = reusablePKey.copy(); // 只有 key 需要 copy，数据不需要
+
+                    // 2. 获取或创建该分区的 Writer
+                    WriterContext context = writersMap.get(currentKey);
+                    if (context == null) {
+                        File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
+                        org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
+                        FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                                .schema(table.schema())
+                                .createWriterFunc(GenericParquetWriter::buildWriter)
+                                .set("write.parquet.compression-codec", "snappy")
+                                .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                                .set("write.parquet.page-size-bytes", pageSize)
+                                .build();
+                        context = new WriterContext(localFile, outputFile, appender);
+                        writersMap.put(currentKey, context);
+                    }
+
+                    // 3. 执行写入并立即释放引用
+                    context.appender.add(rec);
+                    allOps.set(i, null); // ★ 核心：写完立即断开强引用
+                }
+            } finally {
+                // 4. 安全关闭所有 Writer 并收集 Metrics
+                for (Map.Entry<PartitionKey, WriterContext> entry : writersMap.entrySet()) {
+                    PartitionKey pKey = entry.getKey();
+                    WriterContext ctx = entry.getValue();
+                    try {
+                        ctx.appender.close();
+                        DataFile df = DataFiles.builder(spec)
+                                .withInputFile(ctx.outputFile.toInputFile())
+                                .withMetrics(ctx.appender.metrics())
+                                .withFormat(FileFormat.PARQUET)
+                                .withPartition(pKey)
+                                .build();
+                        resultDataFiles.add(df);
+                    } catch (Exception e) {
+                        log.error("[IceBergBatch] Failed to close writer for partition: {}", pKey, e);
+                    }
+                }
+                writersMap.clear();
+            }
         }
-        return dataFiles;
+
+        allOps.clear();
+        return resultDataFiles;
     }
 
     // ========== flushAllThreadsForTable ==========
@@ -868,15 +918,23 @@ public class IceBergBatchOperationHandler {
         GenericRecord record = chooseRecordForPk(op, pkNames);
         if (record == null)
             throw new IllegalArgumentException("[IceBergBatch] op has no record: " + op);
+
+        StringBuilder sb = PK_SB_CACHE.get();
+        sb.setLength(0);
+
         if (pkNames != null && !pkNames.isEmpty()) {
-            return pkNames.stream()
-                    .map(pk -> safeString(record.getField(pk)))
-                    .collect(Collectors.joining("|"));
+            for (int i = 0; i < pkNames.size(); i++) {
+                if (i > 0) sb.append("|");
+                sb.append(safeString(record.getField(pkNames.get(i))));
+            }
         } else {
-            return record.struct().fields().stream()
-                    .map(f -> safeString(record.getField(f.name())))
-                    .collect(Collectors.joining("|"));
+            List<Types.NestedField> fields = record.struct().fields();
+            for (int i = 0; i < fields.size(); i++) {
+                if (i > 0) sb.append("|");
+                sb.append(safeString(record.getField(fields.get(i).name())));
+            }
         }
+        return sb.toString();
     }
 
     private static String safeString(Object val) {
@@ -908,24 +966,36 @@ public class IceBergBatchOperationHandler {
 
     private static String summarizeRecords(List<GenericRecord> records, List<String> keys, int limit) {
         if (records == null || records.isEmpty()) return "[]";
-        List<String> out = new ArrayList<>();
+        StringBuilder sb = new StringBuilder("[");
         int max = Math.min(records.size(), limit);
-        for (int i = 0; i < max; i++) out.add(extractRecordKey(records.get(i), keys));
-        if (records.size() > limit) out.add("...+" + (records.size() - limit));
-        return out.toString();
+        for (int i = 0; i < max; i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(extractRecordKey(records.get(i), keys));
+        }
+        if (records.size() > limit) {
+            sb.append(", ...+").append(records.size() - limit);
+        }
+        sb.append("]");
+        return sb.toString();
     }
 
     private static String extractRecordKey(GenericRecord record, List<String> keys) {
         if (record == null) return "__NULL_RECORD__";
         List<String> useKeys = keys;
         if (useKeys == null || useKeys.isEmpty()) {
-            useKeys = record.struct().fields().stream()
-                    .map(Types.NestedField::name)
-                    .collect(Collectors.toList());
+            useKeys = new ArrayList<>();
+            for (Types.NestedField f : record.struct().fields()) {
+                useKeys.add(f.name());
+            }
         }
-        return useKeys.stream()
-                .map(k -> k + "=" + safeString(record.getField(k)))
-                .collect(Collectors.joining(","));
+
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < useKeys.size(); i++) {
+            if (i > 0) sb.append(",");
+            String k = useKeys.get(i);
+            sb.append(k).append("=").append(safeString(record.getField(k)));
+        }
+        return sb.toString();
     }
 
     private static class MergeResult {
