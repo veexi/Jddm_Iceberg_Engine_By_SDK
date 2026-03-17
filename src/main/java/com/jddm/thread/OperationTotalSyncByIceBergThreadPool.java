@@ -157,8 +157,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
             GenericRecord newRecord = GenericRecord.create(
                     GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-            GenericRecord oldRecord = GenericRecord.create(
-                    GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
+            GenericRecord oldRecord = isFullLoad ? null :
+                    GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
 
             boolean hasNewData = false;
             boolean hasOldData = false;
@@ -171,7 +171,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             for (int colNo = 0; colNo < columnsNum; colNo++) {
                 Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(rowNo + "-" + colNo);
                 colNameByNumberKey = schemaKeyByParquet + "." + columnInfo.getColumnName().toLowerCase();
+                String colNameLower = columnInfo.getColumnName().toLowerCase();
                 if (columnInfo.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
+
 
                     switch (columnInfo.getColumnValue().toUpperCase()) {
                         case "I":
@@ -202,6 +204,13 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                             .append("] table=").append(schemaKeyByParquet)
                             .append(" op=").append(opType)
                             .append(" row=").append(rowNo);
+                }
+                if (isFullLoad) {
+                    if (columnInfo.getColumnValue() != null && !columnInfo.getColumnValue().isEmpty()) {
+                        newRecord.setField(colNameLower, columnInfo.getColumnValue());
+                    }
+                    hasNewData = true;
+                    continue;
                 }
 
                 int cflag = columnInfo.getCflag();

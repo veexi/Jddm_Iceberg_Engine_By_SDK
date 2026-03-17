@@ -33,7 +33,8 @@ import java.util.stream.Collectors;
 public class IceBergBatchOperationHandler {
 
     private static final Logger log = LogManager.getLogger(IceBergBatchOperationHandler.class);
-
+/*    private static final java.util.concurrent.Semaphore WRITE_SEMAPHORE =
+            new java.util.concurrent.Semaphore(2);*/
     private static final Map<String, java.util.concurrent.locks.ReentrantLock> tableFlushLocks =
             new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -112,27 +113,23 @@ public class IceBergBatchOperationHandler {
         // ★ 改动：全量 insert（rawOpType="i"）快速路径，跳过 mergeByPrimaryKey 和 delete 文件生成
         boolean isFullLoad = allOps.stream().allMatch(RowOperation::isFullLoad);
         if (isFullLoad) {
+            int totalOps = allOps.size();
             log.info("[IceBergBatch][tid={}][FullLoad] detected full load, intercepted for local cache. table={} ops={}",
-                    Thread.currentThread().getId(), tableKeyName, allOps.size());
+                    Thread.currentThread().getId(), tableKeyName, totalOps);
 
-            List<GenericRecord> records = allOps.stream()
-                    .map(RowOperation::getNewRecord)
-                    .filter(r -> r != null)
-                    .collect(Collectors.toList());
-
-            if (records.isEmpty()) {
+            if (totalOps == 0) {
                 return new FlushMetrics(0, 0, Collections.emptyList(), Collections.emptyList());
             }
 
-            // ★ 核心改动：不再直接写 HDFS，而是写本地缓存
             long writeStart = System.currentTimeMillis();
-            List<DataFile> dataFiles = writePartitionedDataFilesToLocal(iceBergTable, records, tableKeyName);
+            // ★ 直接传 allOps，方法内部流式处理，不再在外面 collect 成 records List
+            List<DataFile> dataFiles = writePartitionedDataFilesToLocal(iceBergTable, allOps, tableKeyName);
+            allOps.clear(); // ★ 写完立刻释放
             long writeEnd = System.currentTimeMillis();
 
             List<String> dataPaths = dataFiles.stream()
                     .map(df -> "[LOCAL]" + df.path().toString()).collect(Collectors.toList());
 
-            // ★ 核心改动：不再进行 Commit，而是记录元数据，交给异步线程处理
             long cacheStart = System.currentTimeMillis();
             for (DataFile df : dataFiles) {
                 File localFile = new File(df.path().toString());
@@ -140,13 +137,9 @@ public class IceBergBatchOperationHandler {
             }
             long cacheEnd = System.currentTimeMillis();
 
-            log.info("[IceBergBatch][tid={}][FullLoad] local cache ok table={} rows={} " +
-                            "writeMs={} cacheMs={} totalMs={} dataFiles={}",
-                    Thread.currentThread().getId(), tableKeyName, records.size(),
-                    writeEnd - writeStart,
-                    cacheEnd - cacheStart,
-                    cacheEnd - writeStart,
-                    dataPaths);
+            log.info("[IceBergBatch][tid={}][FullLoad] local cache ok table={} rows={} writeMs={} cacheMs={} totalMs={} dataFiles={}",
+                    Thread.currentThread().getId(), tableKeyName, totalOps,
+                    writeEnd - writeStart, cacheEnd - cacheStart, cacheEnd - writeStart, dataPaths);
             return new FlushMetrics(dataFiles.size(), 0, dataPaths, Collections.emptyList());
         }
 
@@ -611,56 +604,90 @@ public class IceBergBatchOperationHandler {
     }
 
     public static List<DataFile> writePartitionedDataFilesToLocal(Table table,
-                                                                  List<GenericRecord> records,
+                                                                  List<RowOperation> allOps,
                                                                   String tableKeyName) throws Exception {
-        if (records == null || records.isEmpty()) return Collections.emptyList();
+        if (allOps == null || allOps.isEmpty()) return Collections.emptyList();
 
         PartitionSpec spec = table.spec();
         boolean isPartitioned = spec.isPartitioned();
-
-        Map<PartitionKey, List<GenericRecord>> partitionMap = new HashMap<>();
-        PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
-
-        for (GenericRecord record : records) {
-            if (isPartitioned) reusablePKey.partition(record);
-            partitionMap.computeIfAbsent(reusablePKey.copy(), k -> new ArrayList<>()).add(record);
-        }
-
-        List<DataFile> dataFiles = new ArrayList<>();
         File cacheDir = new File(Constant.basicWorkPath, "FileCache/" + tableKeyName);
         if (!cacheDir.exists()) cacheDir.mkdirs();
 
-        for (Map.Entry<PartitionKey, List<GenericRecord>> entry : partitionMap.entrySet()) {
+        // 非分区表：直接流式写，零中间 List
+        if (!isPartitioned) {
             File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
             log.info("[IceBergBatch][tid={}] writing full load to local: {}",
                     Thread.currentThread().getId(), localFile.getAbsolutePath());
 
-            // ★ 关键：使用 Files.localOutput 绕过 HDFS，直接写本地磁盘
             org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
 
-            FileAppender<GenericRecord> appender = Parquet.write(outputFile)
-                    .schema(table.schema())
-                    .createWriterFunc(GenericParquetWriter::buildWriter)
-                    .build();
 
-            try {
-                for (GenericRecord row : entry.getValue()) {
-                    appender.add(row);
+            Metrics metrics;
+
+                FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                        .schema(table.schema())
+                        .createWriterFunc(GenericParquetWriter::buildWriter)
+                        .set("write.parquet.compression-codec", "snappy")
+                        .build();
+                try {
+                    for (int i = 0; i < allOps.size(); i++) {
+                        GenericRecord rec = allOps.get(i).getNewRecord();
+                        if (rec != null) appender.add(rec);
+                        allOps.set(i, null); // ★ 写完这条立刻断开引用，让 GC 能回收
+                    }
+                } finally {
+                    appender.close();
                 }
-            } catch (Exception e) {
-                log.error("[IceBergBatch][tid={}] Error writing local cache file: {}, table={}",
-                        Thread.currentThread().getId(), localFile.getAbsolutePath(), tableKeyName, e);
-                throw e;
-            } finally {
-                appender.close();
-            }
+                metrics = appender.metrics();
+
+
+            DataFile df = DataFiles.builder(spec)
+                    .withInputFile(outputFile.toInputFile())
+                    .withMetrics(metrics)
+                    .withFormat(FileFormat.PARQUET)
+                    .build();
+            return Collections.singletonList(df);
+        }
+
+        // 分区表：需要按分区归组，但归组后立刻写，不同时持有所有分区数据
+        Map<PartitionKey, List<RowOperation>> partitionMap = new HashMap<>();
+        PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
+        for (RowOperation op : allOps) {
+            GenericRecord rec = op.getNewRecord();
+            if (rec == null) continue;
+            reusablePKey.partition(rec);
+            partitionMap.computeIfAbsent(reusablePKey.copy(), k -> new ArrayList<>()).add(op);
+        }
+        allOps.clear(); // ★ 分完区之后原始列表立刻释放
+
+        List<DataFile> dataFiles = new ArrayList<>();
+        for (Map.Entry<PartitionKey, List<RowOperation>> entry : partitionMap.entrySet()) {
+            File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
+            org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
+
+            Metrics metrics;
+                FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                        .schema(table.schema())
+                        .createWriterFunc(GenericParquetWriter::buildWriter)
+                        .set("write.parquet.compression-codec", "snappy")
+                        .build();
+                List<RowOperation> partOps = entry.getValue();
+                try {
+                    for (int i = 0; i < partOps.size(); i++) {
+                        GenericRecord rec = partOps.get(i).getNewRecord();
+                        if (rec != null) appender.add(rec);
+                        partOps.set(i, null); // ★ 写完立刻释放
+                    }
+                } finally {
+                    appender.close();
+                }
+                metrics = appender.metrics();
 
             DataFiles.Builder builder = DataFiles.builder(spec)
                     .withInputFile(outputFile.toInputFile())
-                    .withMetrics(appender.metrics())
-                    .withFormat(FileFormat.PARQUET);
-
-            if (isPartitioned) builder.withPartition(entry.getKey());
+                    .withMetrics(metrics)
+                    .withFormat(FileFormat.PARQUET)
+                    .withPartition(entry.getKey());
             dataFiles.add(builder.build());
         }
         return dataFiles;

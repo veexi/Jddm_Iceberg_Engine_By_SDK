@@ -8,6 +8,7 @@ import com.publics.common.ConstantPublic;
 import com.publics.conf.GlobalConfCommInfo;
 import com.publics.engine.state.EngineStateInfo;
 import com.publics.utils.OperationTimes;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.data.GenericRecord;
@@ -25,6 +26,8 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import static com.jddm.operation.timer.IcebergFullLoadAsyncCommitter.fsCache;
 
 public class JddmEngineKillHandler implements SignalHandler{
 	private Logger log = Logger.getLogger(this.getClass());
@@ -90,7 +93,13 @@ public class JddmEngineKillHandler implements SignalHandler{
             //===============================================================================================
             // Total Synchronization Data Operation Processing Before Stopping The (Jddm) Engine
             //===============================================================================================
-
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                int count = fsCache.size();
+                for (org.apache.hadoop.fs.FileSystem fs : fsCache.values()) {
+                    try { fs.close(); } catch (Exception ignored) {}
+                }
+                log.info("[Shutdown] FileSystem cache closed, " + count + " instances released");
+            }));
             if (!GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.isEmpty()
                     || !GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
 

@@ -65,7 +65,6 @@ public class StartIcebergEngine {
     private static  String hiveFilePath = "hdfsFile";
     private static int totalSyncNO=1;
     public static final String version = StartIcebergEngine.class.getPackage().getImplementationVersion();
-    private static final long MIN_FREE_HEAP_BYTES = 2 * 1024 * 1024 * 1024L; // 512MB 安全水位
 
 
     /**
@@ -556,13 +555,23 @@ private static boolean initializeServices() throws InitializationException {
     private static void putWithMemoryGuard(SequencedPackage item) throws InterruptedException {
         Runtime rt = Runtime.getRuntime();
         while (true) {
-            long freeHeap = rt.freeMemory() + (rt.maxMemory() - rt.totalMemory());
-            if (freeHeap >= MIN_FREE_HEAP_BYTES) {
+            long maxMemory   = rt.maxMemory();
+            long totalMemory = rt.totalMemory();
+            long freeMemory  = rt.freeMemory();
+            long usedMemory  = totalMemory - freeMemory;
+            double usageRatio = (double) usedMemory / maxMemory;
+
+            if (usageRatio < 0.90) {
                 break;
             }
-            System.out.printf("[MemGuard] heap low, block producer. freeHeap=%dMB%n",
-                    freeHeap / 1024 / 1024);
-            Thread.sleep(200);
+
+            System.out.printf("[MemGuard] heap high, block producer. used=%.1f%% usedMB=%dMB freeMB=%dMB%n",
+                    usageRatio * 100,
+                    usedMemory / 1024 / 1024,
+                    (maxMemory - usedMemory) / 1024 / 1024);
+
+            System.gc(); // 达到 90% 才触发，不会频繁
+            Thread.sleep(500); // gc 需要时间，等久一点再检测
         }
         GlobalSetConfInfo.icebergEngineOperationQueue.put(item);
     }

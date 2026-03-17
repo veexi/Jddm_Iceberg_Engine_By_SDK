@@ -6,7 +6,7 @@
 
     <groupId>com.sc.service</groupId>
     <artifactId>Jddm_Iceberg_Engine_By_SDK</artifactId>
-    <version>1.0.0-RC1</version>
+    <version>1.0.0-RC2</version>
     <properties>
         <maven.compiler.source>8</maven.compiler.source>
         <maven.compiler.target>8</maven.compiler.target>
@@ -30,8 +30,8 @@
     </build>
     <repositories>
         <repository>
-            <id>aliyun-maven</id>
-            <url>https://maven.aliyun.com/repository/public</url>
+            <id>central</id>
+            <url>https://repo.maven.apache.org/maven2</url>
             <releases>
                 <enabled>true</enabled>
             </releases>
@@ -43,8 +43,8 @@
 
     <pluginRepositories>
         <pluginRepository>
-            <id>aliyun-plugin</id>
-            <url>https://maven.aliyun.com/repository/public</url>
+            <id>central</id>
+            <url>https://repo.maven.apache.org/maven2</url>
             <releases>
                 <enabled>true</enabled>
             </releases>
@@ -135,6 +135,16 @@
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-common</artifactId>
             <version>3.4.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-hadoop</artifactId>
+            <version>1.13.1</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.parquet</groupId>
+            <artifactId>parquet-column</artifactId>
+            <version>1.13.1</version>
         </dependency>
     </dependencies>
 

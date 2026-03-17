@@ -3,6 +3,7 @@ package com.jddm.operation.timer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jddm.common.Constant;
 import com.jddm.conf.GlobalSetConfInfo;
+import com.jddm.utils.KerberosAuthUtil;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -22,6 +23,7 @@ import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 针对全量加载（Full Load）数据的异步提交器。
@@ -31,6 +33,8 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
     private static final Logger log = LogManager.getLogger(IcebergFullLoadAsyncCommitter.class);
     private static final String CACHE_DIR_NAME = "FileCache";
     private static final ObjectMapper mapper = new ObjectMapper();
+
+    public static final Map<String, FileSystem> fsCache = new ConcurrentHashMap<>();
 
     /**
      * 自定义元数据 POJO，用于完美保留 DataFile 的所有核心统计信息
@@ -105,8 +109,7 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
         String hdfsDestPath = table.location() + "/data/" + tableKey.replace(".", "/") + "/" + meta.fileName;
 
         // 3. 上传 HDFS
-        Configuration conf = new Configuration();
-        FileSystem fs = FileSystem.get(new Path(table.location()).toUri(), conf);
+        FileSystem fs = getOrCreateFs(table, tableKey);
         Path src = new Path(parquetFile.getAbsolutePath());
         Path dst = new Path(hdfsDestPath);
         Path tmpDst = new Path(hdfsDestPath + ".tmp"); // 引入临时路径
@@ -152,7 +155,27 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
         metaFile.delete();
         parquetFile.delete();
     }
+    private FileSystem getOrCreateFs(Table table, String tableKey) throws Exception {
+        FileSystem fs = fsCache.get(tableKey);
+        if (fs != null) return fs;
 
+        // 直接从 table.io() 取已经正确初始化过的 Configuration
+        // 这个 conf 是 Iceberg 引擎启动时就配好的，hdfs-site.xml/HA 全在里面
+        Configuration conf;
+        if (table.io() instanceof org.apache.iceberg.hadoop.HadoopFileIO) {
+            conf = ((org.apache.iceberg.hadoop.HadoopFileIO) table.io()).conf();
+            log.info("[AsyncCommitter] Reusing HadoopFileIO conf for table={}", tableKey);
+        } else {
+            // 兜底：走原来的工具类（kerberos 开启场景）
+            conf = KerberosAuthUtil.buildHadoopConf();
+            log.info("[AsyncCommitter] Fallback to KerberosAuthUtil conf for table={}", tableKey);
+        }
+
+        fs = FileSystem.get(new Path(table.location()).toUri(), conf);
+        fsCache.put(tableKey, fs);
+        log.info("[AsyncCommitter] FileSystem initialized and cached for table={}", tableKey);
+        return fs;
+    }
     public static void saveToLocalCache(String tableKey, DataFile dataFile, File localParquetFile) throws Exception {
         File cacheDir = new File(Constant.basicWorkPath, CACHE_DIR_NAME + File.separator + tableKey);
         if (!cacheDir.exists()) cacheDir.mkdirs();

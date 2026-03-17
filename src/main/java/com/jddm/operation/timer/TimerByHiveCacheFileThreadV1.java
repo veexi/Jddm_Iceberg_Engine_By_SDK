@@ -109,6 +109,19 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
             tablesToFlush.add(split[0] + "." + split[1]);
             // ← 这里什么都不删，数据留着给 flushAllThreadsForTable 用
         }
+        for (Map.Entry<String, java.util.concurrent.LinkedBlockingDeque<RowOperation>> entry :
+                GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.entrySet()) {
+            if (entry.getValue().isEmpty()) continue;
+            String key = entry.getKey();
+            // key 不在时间戳 map 里，说明是 flush 后新进来的尾包，直接捞
+            if (!GlobalConfInfo.lastDataWriteTimerByParquetMap.containsKey(key)) {
+                String[] split = key.split("[.]");
+                tablesToFlush.add(split[0] + "." + split[1]);
+                log.info("[TimerFlush][tid={}] orphan queue detected, force flush table={} key={}",
+                        Thread.currentThread().getId(), split[0] + "." + split[1], key);
+            }
+        }
+
 
         // flush 完成后，flushAllThreadsForTable 内部负责清理缓存
         for (String tableKeyName : tablesToFlush) {
