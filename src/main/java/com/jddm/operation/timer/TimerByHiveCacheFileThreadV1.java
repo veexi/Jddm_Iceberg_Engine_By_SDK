@@ -22,7 +22,12 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
 
     @Override
     public void run() {
-        log.info("[tid={}] =====>heartBeat.....{}", Thread.currentThread().getId(), GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
+        log.info("[tid={}] [HeartBeat].....{}", Thread.currentThread().getId(), GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
+        try {
+            putWithMemoryGuard();
+        } catch (InterruptedException e) {
+            log.info("Memory calculate failed ! wait next");
+        }
         try {
             getIceBergHiveCacheFiles();
         } catch (Exception e) {
@@ -129,5 +134,18 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
             flushAllThreadsForTable(tableKeyName);
             log.info("[TimerFlush][tid={}] flush done table={}", Thread.currentThread().getId(), tableKeyName);
         }
+    }
+    private static void putWithMemoryGuard() throws InterruptedException {
+        Runtime rt = Runtime.getRuntime();
+        long maxMemory   = rt.maxMemory();
+        long totalMemory = rt.totalMemory();
+        long freeMemory  = rt.freeMemory();
+        long usedMemory  = totalMemory - freeMemory;
+        double usageRatio = (double) usedMemory / maxMemory;
+
+        log.info("[HeartBeat] JDDM Heap Size used={}%% usedMB={}MB freeMB={}MB",
+                String.format("%.1f", usageRatio * 100),
+                usedMemory / 1024 / 1024,
+                (maxMemory - usedMemory) / 1024 / 1024);
     }
 }
