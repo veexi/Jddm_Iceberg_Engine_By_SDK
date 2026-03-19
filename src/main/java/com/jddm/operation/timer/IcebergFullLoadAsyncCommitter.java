@@ -100,33 +100,66 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
                     if (metaFiles == null || metaFiles.length == 0) return;
 
                     log.info("[AsyncCommitter] Parallel task started for table: {}, files to process: {}", tableKey, metaFiles.length);
-                    
-                    AppendFiles appendFiles = table.newAppend();
-                    List<File> processedMetaFiles = new ArrayList<>();
+
+                    List<File> processedMetaFiles    = new ArrayList<>();
                     List<File> processedParquetFiles = new ArrayList<>();
-                    
+                    // ★ 上传结果先收集，不急着 newAppend
+                    List<DataFile> readyDataFiles    = new ArrayList<>();
+
                     for (File metaFile : metaFiles) {
+                        String baseName    = metaFile.getName().replace(".meta.json", "");
+                        File   parquetFile = new File(metaFile.getParentFile(), baseName + ".parquet");
                         try {
-                            String baseName = metaFile.getName().replace(".meta.json", "");
-                            File parquetFile = new File(metaFile.getParentFile(), baseName + ".parquet");
-                            
                             DataFile dataFile = uploadAndBuildDataFile(table, tableKey, metaFile, parquetFile);
                             if (dataFile != null) {
-                                appendFiles.appendFile(dataFile);
+                                readyDataFiles.add(dataFile);
                                 processedMetaFiles.add(metaFile);
                                 processedParquetFiles.add(parquetFile);
                             }
                         } catch (Exception e) {
-                            log.error("[AsyncCommitter] Failed to process task: {} for table: {}", metaFile.getName(), tableKey, e);
+                            log.error("[AsyncCommitter] Failed to process task: {} for table: {}",
+                                    metaFile.getName(), tableKey, e);
                         }
                     }
-                    
+
                     if (!processedMetaFiles.isEmpty()) {
-                        long commitStart = System.currentTimeMillis();
-                        appendFiles.commit(); // 核心：多文件一次性提交，避免频繁争抢HMS锁
-                        long commitEnd = System.currentTimeMillis();
-                        log.info("[AsyncCommitter] Batch Commit ok, Table: {}, Files: {}, Commit {} ms", tableKey, processedMetaFiles.size(), (commitEnd - commitStart));
-                        
+
+                        // ★ 性能关键：refresh 在循环外只调一次，正常路径只有这一次 HMS 开销
+                        table.refresh();
+
+                        int maxRetry = 3; // 只有全量场景，冲突极罕见，3 次够了
+                        for (int attempt = 1; attempt <= maxRetry; attempt++) {
+                            try {
+                                // newAppend 也在 refresh 之后立即构造，确保基于最新 metadata
+                                AppendFiles appendFiles = table.newAppend();
+                                for (DataFile df : readyDataFiles) {
+                                    appendFiles.appendFile(df);
+                                }
+                                long commitStart = System.currentTimeMillis();
+                                appendFiles.commit();
+                                log.info("[AsyncCommitter] Batch Commit ok, Table: {}, Files: {}, Commit {} ms, attempt={}",
+                                        tableKey, processedMetaFiles.size(),
+                                        System.currentTimeMillis() - commitStart, attempt);
+
+                                // ★ 性能关键：commit 成功后主动 refresh，更新缓存对象内部状态，
+                                //   下一个 processCache 周期直接用，不会再拿到过期 metadata
+                                table.refresh();
+                                break;
+
+                            } catch (org.apache.iceberg.exceptions.CommitFailedException cfe) {
+                                log.warn("[AsyncCommitter] Commit conflict, retry table={} attempt={}/{} err={}",
+                                        tableKey, attempt, maxRetry, cfe.getMessage());
+                                if (attempt >= maxRetry) {
+                                    throw new RuntimeException(
+                                            "[AsyncCommitter] commit retry exhausted table=" + tableKey, cfe);
+                                }
+                                // 真的冲突了才在循环内 refresh，正常路径不会走到这里
+                                table.refresh();
+                                try { Thread.sleep(200L * attempt); } catch (InterruptedException ie) {
+                                    Thread.currentThread().interrupt();
+                                }
+                            }
+                        }
                         cleanUpLocalFiles(tableKey, processedMetaFiles, processedParquetFiles);
                     }
                 } catch (Exception e) {

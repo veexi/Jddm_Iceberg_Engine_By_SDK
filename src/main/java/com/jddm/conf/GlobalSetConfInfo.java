@@ -29,8 +29,8 @@ public class GlobalSetConfInfo {
     public static Map<String,AtomicInteger> IceBergOperationBeginMap = new ConcurrentHashMap<String,AtomicInteger>();
     public static ArrayBlockingQueue<SequencedPackage> icebergEngineOperationQueue = new ArrayBlockingQueue(Constant.icebergOperationQueueSize);
     public static Map<String, List<String>> TablePkColCacheMap = new ConcurrentHashMap<>();
-
-
+    // 在 importHiveTable_IceBerg_Table 建表时一次性填充，之后 O(1) 查询
+    public static Map<String, org.apache.iceberg.types.Type> columnTypeCache = new ConcurrentHashMap<>();
     /**
      * key = db.table.threadId，value 用 LinkedBlockingDeque 支持 addFirst（用于失败回滚）：
      */
