@@ -22,8 +22,6 @@ public class Constant {
 	public static int writeCountNoToHiveFile=10000;
 	/** HDFS 基础路径或 NameNode 地址，如 hdfs://nameservice1 */
 	public static String fsDefaultInfo="";
-	/** 默认目标数据库名称 */
-	public static String settingDataBaseName="";
 	/** Hive 表状态检查重试次数 */
 	public static Integer hiveDiffTimers=5;
 	/** 引擎程序当前的物理工作目录 */

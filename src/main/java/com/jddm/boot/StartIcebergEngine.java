@@ -385,7 +385,7 @@ private static boolean initializeServices() throws InitializationException {
                 try {
                     byte[] tableInfoArr = sqliteDB.query_TableContentObject_ByKey(key);
                     if (tableInfoArr == null || tableInfoArr.length < 4) {
-                        log.warn("[Preload] table {} no valid data, skip", key);
+                        log.error("[Preload] table {} no valid data, skip", key);
                         continue;
                     }
                     TableInfoVo tableInfoDBVo = tableCacheInfo.serializableTableVo_ToByteArray(tableInfoArr);
@@ -397,27 +397,24 @@ private static boolean initializeServices() throws InitializationException {
                         GlobalConfCommInfo.cacheSourceTableInfoMap.remove(key);
                     }
                     GlobalConfCommInfo.cacheTableInfoMap.put(key, tableInfoDBVo);
-                    if (Constant.settingDataBaseName != null && !Constant.settingDataBaseName.equals("")) {
-                        GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
-                                Constant.settingDataBaseName + "." + FileUtils.createTableName_ByJddmEngine(
-                                        tableInfoDBVo.getOwner(), tableInfoDBVo.getTableName()));
-                    } else {
-                        GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
+
+                    GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
                                 tableInfoDBVo.getOwner().toLowerCase() + "." + FileUtils.createTableName_ByJddmEngine(
                                         tableInfoDBVo.getOwner(), tableInfoDBVo.getTableName()));
-                    }
                     if (!tableInfoDBVo.getColumnList().isEmpty()) {
                         iceBergTableOperationByEngine.importHiveTable_IceBerg_Table(tableInfoDBVo, tableColumnMap);
                     }
                     loaded++;
                     log.info("[Preload] loaded table {}", key);
                 } catch (Exception e) {
-                    log.warn("[Preload] load table {} failed: {}", key, e.getMessage());
+                    log.error("[Preload] load table {} failed: {}", key, e.getMessage());
+                    e.printStackTrace();
                 }
             }
             log.info("[Preload] done, loaded {} tables", loaded);
         } catch (Exception e) {
-            log.warn("[Preload] SQLite preload failed: {}", e.getMessage());
+            log.error("[Preload] SQLite preload failed: {}", e.getMessage());
+            e.printStackTrace();
         }
     }
 

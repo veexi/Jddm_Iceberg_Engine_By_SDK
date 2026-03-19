@@ -194,11 +194,9 @@ public class IceBergTableOperationByEngine {
 
         log.info("[DDL] JDDM_ICEBERG_Engine List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
 
-        if(Constant.settingDataBaseName !=null && !Constant.settingDataBaseName.equals("")) {
-            hiveExtTableName = Constant.settingDataBaseName+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
-        }else {
-            hiveExtTableName = tableInfoVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
-        }
+
+        hiveExtTableName = tableInfoVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
+
 
 
         log.info("[DDL] JDDM_ICEBERG_Engine Table::["+hiveExtTableName+"] List_Size ::"+columnList.size()+" operationList ::"+operColumnList.size());
@@ -381,7 +379,7 @@ public class IceBergTableOperationByEngine {
                     throw e;
                 }
             }
-            if(!isTableExists) {
+            if (!isTableExists) {
                 properties.put("engine.hive.enabled", "true");
                 if (!pkNames.isEmpty() && "transaction".equals(Constant.icebergWriteMode)) {
                     properties.put(TableProperties.DELETE_MODE, "merge-on-read");
@@ -389,13 +387,13 @@ public class IceBergTableOperationByEngine {
                     properties.put(TableProperties.MERGE_MODE,  "merge-on-read");
                     log.info("[DDL] table={} pk={} set merge-on-read", setTableKeyName, pkNames);
                 }
-                iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
+                iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName), spec, properties);
                 log.info("[DDL] Successfully created Iceberg table: {}", tableIdentifier);
                 GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
-            }else {
-                if(Constant.dropTableFlag){
+            } else {
+                if (Constant.dropTableFlag) {
                     log.warn("[DDL] DROP_TABLE_FLAG is true, dropping existing table: {}", tableIdentifier);
-                    catalog.dropTable(tableIdentifier,true);
+                    catalog.dropTable(tableIdentifier, true);
                     log.info("[DDL] Successfully dropped table: {}, proceeding to recreate it.", tableIdentifier);
                     properties.put("engine.hive.enabled", "true");
                     if (!pkNames.isEmpty() && "transaction".equals(Constant.icebergWriteMode)) {
@@ -404,24 +402,31 @@ public class IceBergTableOperationByEngine {
                         properties.put(TableProperties.MERGE_MODE,  "merge-on-read");
                         log.info("[DDL] table={} pk={} set merge-on-read", setTableKeyName, pkNames);
                     }
-                    iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName),spec,properties);
+                    iceBergTable = catalog.createTable(tableIdentifier, GlobalSetConfInfo.IceBergSchemaCahceMap.get(setTableKeyName), spec, properties);
                     log.info("[DDL] Successfully recreated Iceberg table: {}", tableIdentifier);
                     GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
-                }else {
+                } else {
                     iceBergTable = catalog.loadTable(tableIdentifier);
                     log.info("[DDL] Successfully loaded existing Iceberg table: {}", tableIdentifier);
                     GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
+                    // load 场景：用 HMS 真实 schema 覆盖内存自建 schema，确保两者完全一致
+                    GlobalSetConfInfo.IceBergSchemaCahceMap.put(setTableKeyName, iceBergTable.schema());
                 }
             }
+            for (org.apache.iceberg.types.Types.NestedField f : iceBergTable.schema().columns()) {
+                GlobalSetConfInfo.columnTypeCache.put(setTableKeyName + "." + f.name(), f.type());
+            }
+            log.info("[DDL] columnTypeCache filled table={} cols={}", setTableKeyName, iceBergTable.schema().columns().size());
 
             socketReturnVo.setReturnFlag(true);
             socketReturnVo.setRowsNo(1);
             log.info("[DDL] Finished importHiveTable_IceBerg_Table for table: {}", setTableKeyName);
             return socketReturnVo;
 
-        } catch (Exception e) {
+        }catch (Exception e) {
+            log.error("[DDL] importHiveTable_IceBerg_Table failed table={} err={}",
+                    setTableKeyName, e.getMessage(), e);
             e.printStackTrace();
-
             socketReturnVo.setReturnFlag(false);
             socketReturnVo.setTradeType("kafkaTable");
             socketReturnVo.setErrorMsg(e.getMessage());
@@ -451,7 +456,15 @@ public class IceBergTableOperationByEngine {
      *   182=timestamp_ytm, 183=timestamp_dts, 208=urowid, 231=timestamp_ltz
      */
     private org.apache.iceberg.types.Type resolveIcebergType(TableColumnVo columnVo, String setTableKeyName) {
-        switch (columnVo.getColumnType()) {
+        System.out.printf("ColName: %-15s ,ColType: %-5s ,SourceType: %-5s, NumType: %-5s, isAdd: %-5s, cFlag: %-5s, cType: %-5s ,cLen: %-5s ,cPre: %-5s\n",
+                columnVo.getColumnName(), columnVo.getColumnType(),
+                columnVo.getSourceType() != null ? ConversionUtil.getIntFromBytes(columnVo.getSourceType()) : "null",
+                columnVo.getNumberType(), columnVo.isAddColFlag(),
+                columnVo.getcFlag() != null ? ConversionUtil.getShortFromBytes(columnVo.getcFlag(), false) : "null",
+                columnVo.getcType() != null ? ConversionUtil.getIntFromBytes(columnVo.getcType()) : "null",
+                columnVo.getColumnLen() != null ? Integer.parseInt(columnVo.getColumnLen()) : "null",
+                columnVo.getColPrecision());
+         switch (columnVo.getColumnType()) {
 
             // ===== 客户映射表：string ← char / varchar2 / clob / nclob =====
             case 1:   // varchar2
@@ -469,7 +482,6 @@ public class IceBergTableOperationByEngine {
             case 178:  // time（Oracle 无原生 TIME 类型，降级 string）
             case 182:  // INTERVAL YEAR TO MONTH
             case 183:  // INTERVAL DAY TO SECOND
-            case 231:  // TIMESTAMP WITH LOCAL TIME ZONE（不在映射表，降级 string）
             case 24:   // long raw（不在映射表，降级 string）
             case 111:  // lob（不在映射表，降级 string）
             case 114:  // bfile（不在映射表，降级 string）
@@ -481,10 +493,16 @@ public class IceBergTableOperationByEngine {
 
             // ===== 客户映射表：timestamp ← date / timestamp =====
             case 12:   // Oracle DATE（含时分秒）
+                return Types.DateType.get();
             case 180:  // TIMESTAMP
+                // 长度为 1 时，源端实际是 TIME 类型，按 Iceberg TimeType 建表
+                if (Integer.parseInt(columnVo.getColumnLen())==1) {
+                    return Types.TimeType.get();
+                }
                 return Types.TimestampType.withoutZone();
 
             // ===== 客户映射表：timestamptz ← timestamp with time zone =====
+            case 231:
             case 181:  // TIMESTAMP WITH TIME ZONE
                 return Types.TimestampType.withZone();
 

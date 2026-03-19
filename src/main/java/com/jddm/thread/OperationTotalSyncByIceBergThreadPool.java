@@ -43,9 +43,17 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"),
             java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"),
             java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd"),
-    };
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"),
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS"),
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS"),
 
+    };
+    private static final java.time.format.DateTimeFormatter DATE_FMT_SLASH =
+            java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd");
+    private static final java.time.format.DateTimeFormatter TIME_FMT_MICROSECOND =
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
+    private static final java.time.format.DateTimeFormatter TIME_FMT_MILLISECOND =
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
     // 对应标记哪些是纯日期格式（没有时间部分，匹配后要补 00:00:00）
     private static final boolean[] TIMESTAMP_IS_DATE_ONLY = {
             false, false, false, false, false, true, false, true
@@ -171,6 +179,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
         List<RowOperation> result = new ArrayList<>(rowsNum);
         long baseOffset = pktSeq * 1_000_000L;
+        StringBuilder mapKeyBuilder = new StringBuilder(16);
 
         StringBuilder debugColLogs = null;
         if (Constant.debugLogEnabled) {
@@ -193,9 +202,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             }
 
             for (int colNo = 0; colNo < columnsNum; colNo++) {
-                Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(rowNo + "-" + colNo);
+                mapKeyBuilder.setLength(0);
+                mapKeyBuilder.append(rowNo).append('-').append(colNo);
+                Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(mapKeyBuilder.toString());
                 // colNameByNumberKey 保留赋值，兼容外部可能存在的引用
-                colNameByNumberKey = schemaKeyByParquet + "." + columnInfo.getColumnName().toLowerCase();
                 String colNameLower = columnInfo.getColumnName().toLowerCase();
                 if (columnInfo.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
 
@@ -236,12 +246,11 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 if (isFullLoad) {
                     String rawVal = columnInfo.getColumnValue();
                     if (rawVal != null && !rawVal.isEmpty()) {
-                        org.apache.iceberg.Schema schema =
-                                GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet);
-                        org.apache.iceberg.types.Types.NestedField field =
-                                schema != null ? schema.findField(colNameLower) : null;
-                        Object convertedVal = (field != null)
-                                ? convertValue(rawVal, field.type(), colNameLower)
+                        // 直接 O(1) 查缓存，不再每列遍历 schema
+                        org.apache.iceberg.types.Type fieldType =
+                                GlobalSetConfInfo.columnTypeCache.get(schemaKeyByParquet + "." + colNameLower);
+                        Object convertedVal = (fieldType != null)
+                                ? convertValue(rawVal, fieldType, colNameLower)
                                 : rawVal;
                         if (convertedVal != null) {
                             newRecord.setField(colNameLower, convertedVal);
@@ -586,7 +595,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
             } else if (fieldType instanceof org.apache.iceberg.types.Types.BooleanType) {
                 // Oracle NUMBER(1,0)：1/true → true，0/false → false
-                return "1".equals(rawValue.trim()) || "true".equalsIgnoreCase(rawValue.trim());
+                return "1".equals(rawValue.trim()) || "true".equalsIgnoreCase(rawValue.trim()) || "t".equalsIgnoreCase(rawValue.trim());
 
             } else if (fieldType instanceof org.apache.iceberg.types.Types.LongType) {
                 // Oracle NUMBER(n,0)；CDC 有时带小数点如 "12345.0" 或科学计数法
@@ -622,6 +631,35 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
              } else if (fieldType instanceof org.apache.iceberg.types.Types.DoubleType) {
                 // BINARY_DOUBLE：同上，用 parseDouble
                 return Double.parseDouble(rawValue.trim());
+            } else if (fieldType instanceof org.apache.iceberg.types.Types.DateType) {
+                // Oracle DATE 只含日期部分，对应 Java LocalDate
+                String trimmed = rawValue.trim();
+                // 有些 Oracle DATE 带时分秒，截掉只取日期部分
+                if (trimmed.length() > 10 && trimmed.charAt(10) == ' ') {
+                    trimmed = trimmed.substring(0, 10);
+                }
+                try { return java.time.LocalDate.parse(trimmed); } catch (Exception ignored) {}           // yyyy-MM-dd
+                try { return java.time.LocalDate.parse(trimmed, DATE_FMT_SLASH); } catch (Exception ignored) {} // yyyy/MM/dd
+                log.warn("[IceBergPool][tid={}] cannot parse date '{}' col={}, returning null",
+                        Thread.currentThread().getId(), rawValue, colName);
+                return null;
+            } else if (fieldType instanceof org.apache.iceberg.types.Types.TimeType) {
+                String trimmed = rawValue.trim();
+                try {
+                    return java.time.LocalTime.parse(trimmed, TIME_FMT_MICROSECOND);
+                } catch (Exception ignored) {
+                }
+                try {
+                    return java.time.LocalTime.parse(trimmed, TIME_FMT_MILLISECOND);
+                } catch (Exception ignored) {
+                }
+                try {
+                    return java.time.LocalTime.parse(trimmed);
+                } catch (Exception ignored) {
+                }
+                log.warn("[IceBergPool][tid={}] cannot parse time '{}' col={}, returning null",
+                        Thread.currentThread().getId(), rawValue, colName);
+                return null;
             }else if (fieldType instanceof org.apache.iceberg.types.Types.TimestampType) {
                     boolean withZone = ((org.apache.iceberg.types.Types.TimestampType) fieldType).shouldAdjustToUTC();
                     return parseTimestampValue(rawValue.trim(), withZone);

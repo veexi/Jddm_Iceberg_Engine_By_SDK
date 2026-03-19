@@ -4,6 +4,7 @@ import com.dsg.operation.common.ConstantSet;
 import com.jddm.boot.StartIcebergEngine;
 import com.jddm.common.Constant;
 import com.jddm.exception.InitializationException;
+import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
 import com.publics.utils.FileUtils;
 import org.apache.logging.log4j.LogManager;
@@ -285,7 +286,15 @@ public class InitConfigParameter {
             } else {
                 parameterStrMap.put("DROP_TABLE_FLAG", Constant.dropTableFlag);
             }
-
+            parameterStr = GlobalConfInfo.getConf().getValue("HIVE_TABLE_NAME_FORMAT");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                ConstantPubSet.hiveTableNameByJddmEngineFormat = parameterStr.trim();
+                parameterStrMap.put("HIVE_TABLE_NAME_FORMAT", parameterStr.trim());
+            } else {
+                // 默认只用表名，等价于原始 String 模式下直接 tableName
+                ConstantPubSet.hiveTableNameByJddmEngineFormat = "%TT";
+                parameterStrMap.put("HIVE_TABLE_NAME_FORMAT", "%TT");
+            }
             parameterStr = GlobalConfInfo.getConf().getValue("LOCAL_FILE_DELETE_POLICY");
             if (parameterStr != null && !parameterStr.equals("")) {
                 String policy = parameterStr.trim().toLowerCase();
