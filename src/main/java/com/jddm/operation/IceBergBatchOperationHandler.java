@@ -111,7 +111,8 @@ public class IceBergBatchOperationHandler {
         }
 
         // ★ 改动：全量 insert（rawOpType="i"）快速路径，跳过 mergeByPrimaryKey 和 delete 文件生成
-        boolean isFullLoad = allOps.stream().allMatch(RowOperation::isFullLoad);
+        // 由于批次互斥，这里也用 O(1) 探测
+        boolean isFullLoad = allOps.get(0).isFullLoad();
         if (isFullLoad) {
             int totalOps = allOps.size();
             log.info("[IceBergBatch][tid={}][FullLoad] detected full load, intercepted for local cache. table={} ops={}",
@@ -775,40 +776,61 @@ public class IceBergBatchOperationHandler {
 
             if (allOps.isEmpty()) return;
 
-            // 跨线程全局排序，保证 binlog 顺序正确性，这步不能省
-            allOps.sort(Comparator.comparingLong(RowOperation::getBinlogOffset));
+            // 由于每个批次只能是纯全量或者纯增量，不存在混合情况，直接取第一个元素探测即可 (O(1))
+            boolean isAllFullLoad = allOps.get(0).isFullLoad();
+
+            if (!isAllFullLoad) {
+                // 跨线程全局排序，保证 binlog 顺序正确性，这步不能省
+                allOps.sort(Comparator.comparingLong(RowOperation::getBinlogOffset));
+            } else {
+                if (Constant.debugLogEnabled) {
+                    log.info("[IceBergBatch][tid={}] allOps are full load, skip sorting for table={}", Thread.currentThread().getId(), tableKeyName);
+                }
+            }
 
             int totalOps = allOps.size();
             int batchMaxSize = Constant.flushBatchMaxSize;
             int flushedUntil = 0;
 
-            log.info("[IceBergBatch][tid={}] flush start table={} totalOps={} batchMaxSize={}",
-                    Thread.currentThread().getId(), tableKeyName, totalOps, batchMaxSize);
+            log.info("[IceBergBatch][tid={}] flush start table={} totalOps={} isAllFullLoad={} batchMaxSize={}",
+                    Thread.currentThread().getId(), tableKeyName, totalOps, isAllFullLoad, batchMaxSize);
 
             try {
-                // ★ 改动：while 循环 + 每批成功后 clear，替代原来的 subList 只读视图
-                // allOps 全量排序保证顺序，每批 flush 成功后 clear 释放内存，GC 可分批回收
-                while (!allOps.isEmpty()) {
-                    int batchSize = Math.min(batchMaxSize, allOps.size());
-
-                    // ★ 改动：copy 出独立 List，不持有 allOps 的 subList 引用
-                    List<RowOperation> batch = new ArrayList<>(allOps.subList(0, batchSize));
+                if (isAllFullLoad) {
+                    // 全量模式：直接全量提交，不进行 subList 切分，避免数组拷贝和 CPU 开销
                     String batchId = UUID.randomUUID().toString().substring(0, 8);
+                    log.info("[IceBergBatch][tid={}] >>> batchId={} table={} [FullLoad Direct Flush] totalOps={}",
+                            Thread.currentThread().getId(), batchId, tableKeyName, totalOps);
 
-                    log.info("[IceBergBatch][tid={}] >>> batchId={} table={} [{}-{}/{}]",
-                            Thread.currentThread().getId(), batchId, tableKeyName,
-                            flushedUntil, flushedUntil + batchSize, totalOps);
-
-                    FlushMetrics metrics = flushBatch(tableKeyName, tableKeyName, batch);
-                    flushedUntil += batchSize;
-
-                    // ★ 改动：flush 成功后立即释放这批内存，GC 可在下次循环前回收
-                    allOps.subList(0, batchSize).clear();
-                    batch = null;
+                    FlushMetrics metrics = flushBatch(tableKeyName, tableKeyName, allOps);
+                    flushedUntil = totalOps;
+                    allOps.clear();
 
                     log.info("[IceBergBatch][tid={}] <<< batchId={} table={} dataFiles={} deleteFiles={}",
                             Thread.currentThread().getId(), batchId, tableKeyName,
                             metrics.dataFilesCount, metrics.deleteFilesCount);
+                } else {
+                    // 增量模式：保持 while 循环切分，限制单批次大小以防 Iceberg OOM 和 Commit 冲突
+                    while (!allOps.isEmpty()) {
+                        int batchSize = Math.min(batchMaxSize, allOps.size());
+
+                        List<RowOperation> batch = new ArrayList<>(allOps.subList(0, batchSize));
+                        String batchId = UUID.randomUUID().toString().substring(0, 8);
+
+                        log.info("[IceBergBatch][tid={}] >>> batchId={} table={} [{}-{}/{}]",
+                                Thread.currentThread().getId(), batchId, tableKeyName,
+                                flushedUntil, flushedUntil + batchSize, totalOps);
+
+                        FlushMetrics metrics = flushBatch(tableKeyName, tableKeyName, batch);
+                        flushedUntil += batchSize;
+
+                        allOps.subList(0, batchSize).clear();
+                        batch = null;
+
+                        log.info("[IceBergBatch][tid={}] <<< batchId={} table={} dataFiles={} deleteFiles={}",
+                                Thread.currentThread().getId(), batchId, tableKeyName,
+                                metrics.dataFilesCount, metrics.deleteFilesCount);
+                    }
                 }
 
                 keysToRemove.forEach(k -> {

@@ -91,4 +91,6 @@ public class Constant {
 	public static String hiveMetastorePrincipal = "";
 	public static boolean dropTableFlag = false;
 	public static int icebergOperationQueueSize = 10000;
+	/** 本地文件删除策略：delete（默认）、bak（备份到 FileCache_bak）、keep（保留） */
+	public static String localFileDeletePolicy = "delete";
 }

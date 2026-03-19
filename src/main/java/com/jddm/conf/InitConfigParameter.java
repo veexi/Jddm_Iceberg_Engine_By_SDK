@@ -286,6 +286,20 @@ public class InitConfigParameter {
                 parameterStrMap.put("DROP_TABLE_FLAG", Constant.dropTableFlag);
             }
 
+            parameterStr = GlobalConfInfo.getConf().getValue("LOCAL_FILE_DELETE_POLICY");
+            if (parameterStr != null && !parameterStr.equals("")) {
+                String policy = parameterStr.trim().toLowerCase();
+                if ("delete".equals(policy) || "bak".equals(policy) || "keep".equals(policy)) {
+                    Constant.localFileDeletePolicy = policy;
+                    parameterStrMap.put("LOCAL_FILE_DELETE_POLICY", policy);
+                } else {
+                    log.warn(" Invalid LOCAL_FILE_DELETE_POLICY={}, use default delete", parameterStr);
+                    parameterStrMap.put("LOCAL_FILE_DELETE_POLICY", Constant.localFileDeletePolicy);
+                }
+            } else {
+                parameterStrMap.put("LOCAL_FILE_DELETE_POLICY", Constant.localFileDeletePolicy);
+            }
+
             hdfsDir = new File(ConstantSet.baseWorkDir + File.separator + StartIcebergEngine.getHiveFilePath());
             if (hdfsDir.exists()) {
                 log.info(" Jddm Iceberg Engine Path ::" + ConstantSet.baseWorkDir + File.separator + StartIcebergEngine.getHiveFilePath() + " exists ... ");

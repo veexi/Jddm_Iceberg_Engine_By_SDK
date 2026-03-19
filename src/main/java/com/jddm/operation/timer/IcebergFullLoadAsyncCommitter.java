@@ -19,11 +19,15 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 针对全量加载（Full Load）数据的异步提交器。
@@ -35,6 +39,8 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
     private static final ObjectMapper mapper = new ObjectMapper();
 
     public static final Map<String, FileSystem> fsCache = new ConcurrentHashMap<>();
+    private static final Map<String, Boolean> processingTables = new ConcurrentHashMap<>();
+    private static final ExecutorService tableTaskExecutorStatus = Executors.newCachedThreadPool();
 
     /**
      * 自定义元数据 POJO，用于完美保留 DataFile 的所有核心统计信息
@@ -77,29 +83,73 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
 
         for (File tableDir : tableDirs) {
             String tableKey = tableDir.getName();
-            Table table = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKey);
-            if (table == null) continue;
-
-            File[] metaFiles = tableDir.listFiles((dir, name) -> name.endsWith(".meta.json"));
-            if (metaFiles == null) continue;
-
-            for (File metaFile : metaFiles) {
-                try {
-                    handleSingleTask(table, tableKey, metaFile);
-                } catch (Exception e) {
-                    log.error("[AsyncCommitter] Failed to process task: {} for table: {}", metaFile.getName(), tableKey, e);
-                }
+            
+            // 使用 putIfAbsent 确保同一个表同一时间只有一个线程在处理，保证顺序性并避免并发 Commit 冲突
+            if (processingTables.putIfAbsent(tableKey, true) != null) {
+                continue; 
             }
+
+            tableTaskExecutorStatus.submit(() -> {
+                try {
+                    Table table = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKey);
+                    if (table == null) {
+                        return;
+                    }
+
+                    File[] metaFiles = tableDir.listFiles((dir, name) -> name.endsWith(".meta.json"));
+                    if (metaFiles == null || metaFiles.length == 0) return;
+
+                    log.info("[AsyncCommitter] Parallel task started for table: {}, files to process: {}", tableKey, metaFiles.length);
+                    
+                    AppendFiles appendFiles = table.newAppend();
+                    List<File> processedMetaFiles = new ArrayList<>();
+                    List<File> processedParquetFiles = new ArrayList<>();
+                    
+                    for (File metaFile : metaFiles) {
+                        try {
+                            String baseName = metaFile.getName().replace(".meta.json", "");
+                            File parquetFile = new File(metaFile.getParentFile(), baseName + ".parquet");
+                            
+                            DataFile dataFile = uploadAndBuildDataFile(table, tableKey, metaFile, parquetFile);
+                            if (dataFile != null) {
+                                appendFiles.appendFile(dataFile);
+                                processedMetaFiles.add(metaFile);
+                                processedParquetFiles.add(parquetFile);
+                            }
+                        } catch (Exception e) {
+                            log.error("[AsyncCommitter] Failed to process task: {} for table: {}", metaFile.getName(), tableKey, e);
+                        }
+                    }
+                    
+                    if (!processedMetaFiles.isEmpty()) {
+                        long commitStart = System.currentTimeMillis();
+                        appendFiles.commit(); // 核心：多文件一次性提交，避免频繁争抢HMS锁
+                        long commitEnd = System.currentTimeMillis();
+                        log.info("[AsyncCommitter] Batch Commit ok, Table: {}, Files: {}, Commit {} ms", tableKey, processedMetaFiles.size(), (commitEnd - commitStart));
+                        
+                        cleanUpLocalFiles(tableKey, processedMetaFiles, processedParquetFiles);
+                    }
+                } catch (Exception e) {
+                    log.error("[AsyncCommitter] Batch commit failed for table: {}", tableKey, e);
+                } finally {
+                    processingTables.remove(tableKey);
+                }
+            });
         }
     }
 
-    private void handleSingleTask(Table table, String tableKey, File metaFile) throws Exception {
+    private DataFile uploadAndBuildDataFile(Table table, String tableKey, File metaFile, File parquetFile) throws Exception {
         String baseName = metaFile.getName().replace(".meta.json", "");
-        File parquetFile = new File(metaFile.getParentFile(), baseName + ".parquet");
 
         if (!parquetFile.exists()) {
-            metaFile.delete();
-            return;
+            if ("bak".equals(Constant.localFileDeletePolicy)) {
+                File bakDir = new File(Constant.basicWorkPath, "FileCache_bak" + java.io.File.separator + tableKey);
+                if (!bakDir.exists()) bakDir.mkdirs();
+                metaFile.renameTo(new File(bakDir, metaFile.getName()));
+            } else if ("delete".equals(Constant.localFileDeletePolicy)) {
+                metaFile.delete();
+            }
+            return null; // 返回 null 代表忽略此文件
         }
 
         // 1. 反序列化 Meta
@@ -118,12 +168,15 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
 
         if (!fs.exists(dst)) {
             log.info("[AsyncCommitter] Uploading {} to HDFS: {}", tableKey, hdfsDestPath);
+            long uploadStart = System.currentTimeMillis();
             // 1. 先传到临时文件
             fs.copyFromLocalFile(false, true, src, tmpDst);
             // 2. 原子的 rename 操作
             if (!fs.rename(tmpDst, dst)) {
-                throw new RuntimeException("HDFS rename 失败: " + tmpDst + " -> " + dst);
+                throw new RuntimeException("HDFS rename failed: " + tmpDst + " -> " + dst);
             }
+            long uploadEnd = System.currentTimeMillis();
+            log.info("[AsyncCommitter] Table: {}, File: {}, HDFS Upload {} ms", tableKey, baseName, (uploadEnd - uploadStart));
         }
 
         // 4. 还原 Metrics (将 Base64 还原为 ByteBuffer)
@@ -137,7 +190,7 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
                 decodeBounds(meta.upperBounds)
         );
 
-        // 5. 构造 DataFile 并提交
+        // 5. 构造 DataFile
         DataFiles.Builder builder = DataFiles.builder(table.spec())
                 .withPath(hdfsDestPath)
                 .withFormat(org.apache.iceberg.FileFormat.PARQUET)
@@ -151,11 +204,23 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
             // 或者在 saveToLocalCache 时存下 partition path
         }
 
-        table.newAppend().appendFile(builder.build()).commit();
+        return builder.build();
+    }
 
-        log.info("[AsyncCommitter] Commit ok, cleaning local: {}", baseName);
-        metaFile.delete();
-        parquetFile.delete();
+    private void cleanUpLocalFiles(String tableKey, List<File> metaFiles, List<File> parquetFiles) {
+        for (int i = 0; i < metaFiles.size(); i++) {
+            File metaFile = metaFiles.get(i);
+            File parquetFile = parquetFiles.get(i);
+            if ("bak".equals(Constant.localFileDeletePolicy)) {
+                File bakDir = new File(Constant.basicWorkPath, "FileCache_bak" + java.io.File.separator + tableKey);
+                if (!bakDir.exists()) bakDir.mkdirs();
+                metaFile.renameTo(new File(bakDir, metaFile.getName()));
+                parquetFile.renameTo(new File(bakDir, parquetFile.getName()));
+            } else if ("delete".equals(Constant.localFileDeletePolicy)) {
+                metaFile.delete();
+                parquetFile.delete();
+            }
+        }
     }
     private FileSystem getOrCreateFs(Table table, String tableKey) throws Exception {
         FileSystem fs = fsCache.get(tableKey);
