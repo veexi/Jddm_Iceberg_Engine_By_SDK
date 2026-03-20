@@ -163,6 +163,7 @@ public class StartIcebergEngine {
             }
             properties.setProperty("ServerPort", Constant.socketServerPort);
             properties.setProperty("ThreadPoolSize", Constant.socketThreadPoolSize);
+            properties.setProperty("setQueueSize","1000");
             SocketGeneralEngine engine = SocketGeneralEngine.create("path")
                     .setting(properties)
                     .notifying((item) -> {
@@ -205,7 +206,11 @@ public class StartIcebergEngine {
                                     tableCacheInfo.setSourceColumeTypeToYloaderDictionary(cachekeyName, ((TableInfoVo) item));
                                     //写入到sqlite 嵌入式数据库中
                                     sqLiteJDBC = new SQLiteJDBC();
-                                    sqLiteJDBC.recordJddmCacheTable_ToSqliteDB(cachekeyName,((TableInfoVo) item).getObjn()+"",content,tableCacheInfo.serializableTableVo_ToByteArray((TableInfoVo) item));
+                                    try {
+                                        sqLiteJDBC.recordJddmCacheTable_ToSqliteDB(cachekeyName,((TableInfoVo) item).getObjn()+"",content,tableCacheInfo.serializableTableVo_ToByteArray((TableInfoVo) item));
+                                    } catch (Exception e) {
+                                        log.error("Jddm Engine Plug-in Table DDL Write To Sqlite Exception !");
+                                    }
 
                                 }
                                 GlobalConfCommInfo.cacheSourceTableInfoMap.remove(cachekeyName);
@@ -552,7 +557,7 @@ private static boolean initializeServices() throws InitializationException {
     private static void putWithMemoryGuard(SequencedPackage item) throws InterruptedException {
         Runtime rt = Runtime.getRuntime();
         while (true) {
-            long blockStart = 0;
+//            long blockStart = 0;
 
             long maxMemory   = rt.maxMemory();
             long totalMemory = rt.totalMemory();
@@ -564,7 +569,7 @@ private static boolean initializeServices() throws InitializationException {
                 break;
             }
 
-            if (blockStart == 0) {
+/*            if (blockStart == 0) {
                 blockStart = System.currentTimeMillis();
             }
             long blockedMs = System.currentTimeMillis() - blockStart;
@@ -576,10 +581,10 @@ private static boolean initializeServices() throws InitializationException {
                         usedMemory / 1024 / 1024,
                         (maxMemory - usedMemory) / 1024 / 1024,
                         blockedMs);
-            }
+            }*/
 
 //            System.gc(); // 达到 90% 才触发，不会频繁
-            Thread.sleep(200); // gc 需要时间，等久一点再检测
+            Thread.sleep(500); // gc 需要时间，等久一点再检测
         }
         GlobalSetConfInfo.icebergEngineOperationQueue.put(item);
     }

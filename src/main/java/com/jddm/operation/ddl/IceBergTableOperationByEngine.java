@@ -249,14 +249,14 @@ public class IceBergTableOperationByEngine {
             boolean isPkCol = isTransactionMode && pkColumnMap.containsKey(columnVo.getColumnName().toLowerCase());
 
             // CLOB(112)/BLOB(113)：保留 sourceType==5009(bytes) 的写入层标记
-            if (columnVo.getColumnType() == 112 || columnVo.getColumnType() == 113) {
+/*            if (columnVo.getColumnType() == 112 || columnVo.getColumnType() == 113) {
                 int sourceTypeInt = ConversionUtil.getIntFromBytes(columnVo.getSourceType());
                 if (sourceTypeInt == 5009) {
                     GlobalConfCommInfo.jddmEngineTypeBy0x71BytesColMap.put(
                             setTableKeyName + "." + columnVo.getColumnName().toLowerCase(),
                             columnVo.getColumnName().toLowerCase());
                 }
-            }
+            }*/
 
             // 通过统一的类型解析方法得到 Iceberg 物理类型
             org.apache.iceberg.types.Type fieldType = resolveIcebergType(columnVo, setTableKeyName);
@@ -517,12 +517,14 @@ public class IceBergTableOperationByEngine {
 
             // ===== 客户映射表：timestamp ← date / timestamp =====
             case 12:   // Oracle DATE（含时分秒）
-                return Types.DateType.get();
+                // colPrecision == 4 表示该字段仅存储年月日，无时分秒部分
+/*                if (Integer.parseInt(columnVo.getColPrecision()) == 4) {
+                    return Types.DateType.get();
+                }*/
+                // 否则 Oracle DATE 实际含时分秒，映射为不带时区的 timestamp
+                return Types.TimestampType.withoutZone();
             case 180:  // TIMESTAMP
                 // 长度为 1 时，源端实际是 TIME 类型，按 Iceberg TimeType 建表
-                if (Integer.parseInt(columnVo.getColumnLen())==1) {
-                    return Types.TimeType.get();
-                }
                 return Types.TimestampType.withoutZone();
 
             // ===== 客户映射表：timestamptz ← timestamp with time zone =====
