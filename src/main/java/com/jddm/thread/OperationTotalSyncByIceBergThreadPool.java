@@ -32,22 +32,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
     public Logger log = LogManager.getLogger(OperationTotalSyncByIceBergThreadPool.class);
 
-    private Lock threadlock = new ReentrantLock();
     // 原来的 TIMESTAMP_PATTERNS 字符串数组删掉，换成预编译好的 Formatter 数组
 // DateTimeFormatter 是线程安全的，直接 static final 共享
-    private static final java.time.format.DateTimeFormatter[] TIMESTAMP_FORMATTERS = {
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss"),
-            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss"),
-            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS"),
-            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS"),
-
-    };
+    private static final java.time.format.DateTimeFormatter TIME_FMT_STANDARD =
+            java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final java.time.format.DateTimeFormatter DATE_FMT_SLASH =
             java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd");
     private static final java.time.format.DateTimeFormatter TIME_FMT_MICROSECOND =
@@ -58,14 +46,22 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
     private static final boolean[] TIMESTAMP_IS_DATE_ONLY = {
             false, false, false, false, false, true, false, true
     };
+    // 无时区
+    private static final java.time.format.DateTimeFormatter FMT_DATETIME_NS   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS");
+    private static final java.time.format.DateTimeFormatter FMT_DATETIME_US   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+    private static final java.time.format.DateTimeFormatter FMT_DATETIME_MS   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    private static final java.time.format.DateTimeFormatter FMT_DATETIME      = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final java.time.format.DateTimeFormatter FMT_DATETIME_HM   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    private static final java.time.format.DateTimeFormatter FMT_DATE          = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final java.time.format.DateTimeFormatter FMT_DATE_SLASH    = java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd");
+    private static final java.time.format.DateTimeFormatter FMT_DATETIME_SLASH= java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");
+    // 带时区
+    private static final java.time.format.DateTimeFormatter FMT_ZDT_NS        = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS XXX");
+    private static final java.time.format.DateTimeFormatter FMT_ZDT_US        = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS XXX");
+    private static final java.time.format.DateTimeFormatter FMT_ZDT_MS        = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS XXX");
+    private static final java.time.format.DateTimeFormatter FMT_ZDT           = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss XXX");
 
-    // withZone 分支同理，预编译带时区的 Formatter
-    private static final java.time.format.DateTimeFormatter[] ZONED_FORMATTERS = {
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS XXX"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS XXX"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS XXX"),
-            java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss XXX"),
-    };
+
     @Override
     public void run() {
         SequencedPackage seqPackage;
@@ -680,12 +676,38 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
     }
 
 
+    // =====================================================================
+// withZone 解析：按长度+关键字符位精确定位，不走异常控制流
+//
+// 各格式精确长度和关键字符：
+//   len=36, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSSSSSSSS +08:00"  纳秒+时区
+//   len=33, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSSSSS +08:00"     微秒+时区
+//   len=30, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSS +08:00"        毫秒+时区
+//   len=26, charAt(19)=' ' → "yyyy-MM-dd HH:mm:ss +08:00"            无小数+时区
+//   len=26, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSSSSS"            微秒无时区（兜底UTC）
+//   其余                   → 无时区格式（兜底UTC）
+// =====================================================================
     private Object parseTimestampValue(String raw, boolean withZone) {
+        if (raw == null || raw.isEmpty()) return null;
         if (withZone) {
-            try { return java.time.OffsetDateTime.parse(raw); } catch (Exception ignored) {}
-            for (java.time.format.DateTimeFormatter fmt : ZONED_FORMATTERS) {
-                try { return java.time.OffsetDateTime.parse(raw, fmt); } catch (Exception ignored) {}
+            int len = raw.length();
+            try {
+                if (len == 36 && raw.charAt(19) == '.') {
+                    return java.time.OffsetDateTime.parse(raw, FMT_ZDT_NS);
+                } else if (len == 33 && raw.charAt(19) == '.') {
+                    return java.time.OffsetDateTime.parse(raw, FMT_ZDT_US);
+                } else if (len == 30 && raw.charAt(19) == '.') {
+                    return java.time.OffsetDateTime.parse(raw, FMT_ZDT_MS);
+                } else if (len == 26 && raw.charAt(19) == ' ') {
+                    return java.time.OffsetDateTime.parse(raw, FMT_ZDT);
+                }
+                // 其余（包括 len=26 charAt(19)='.' 的无时区微秒）走兜底
+            } catch (Exception e) {
+                log.warn("[IceBergPool][tid={}] cannot parse zoned timestamp '{}', returning null",
+                        Thread.currentThread().getId(), raw);
+                return null;
             }
+            // 兜底：无时区字符串解析后附加 UTC
             java.time.LocalDateTime ldt = parseLocalDateTimeValue(raw);
             return ldt != null ? ldt.atOffset(java.time.ZoneOffset.UTC) : null;
         } else {
@@ -694,50 +716,61 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
     }
 
     // =====================================================================
-    // 【时间格式配置区】在此数组里添加/修改。
-    //
-    // 规则：
-    //   1. 按"从精度高到低"排列，避免短格式误匹配长字符串。
-    //   2. 纯日期格式（无时分秒，即 pattern 中不含 "H"）放在最后，
-    //      匹配后自动补 00:00:00。
-    //   3. 新增格式直接在数组末尾追加，格式串遵循 DateTimeFormatter 语法。
-    //
-    // 当前已支持格式（与 CDC/LogMiner 默认输出对齐）：
-    //    "2024-01-15 12:34:56.123456789"  → yyyy-MM-dd HH:mm:ss.SSSSSSSSS （纳秒，9位）
-    //    "2024-01-15 12:34:56.123456"     → yyyy-MM-dd HH:mm:ss.SSSSSS    （微秒，6位，Oracle TIMESTAMP 默认）
-    //    "2024-01-15 12:34:56.123"        → yyyy-MM-dd HH:mm:ss.SSS       （毫秒）
-    //    "2024-01-15 12:34:56"            → yyyy-MM-dd HH:mm:ss
-    //    "2024-01-15 12:34"               → yyyy-MM-dd HH:mm
-    //    "2024-01-15"                     → yyyy-MM-dd                    （纯日期，补 00:00:00）
-    //    "2024/01/15 12:34:56"            → yyyy/MM/dd HH:mm:ss
-    //    "2024/01/15"                     → yyyy/MM/dd                    （纯日期，补 00:00:00）
-    //
-    //  如果改了格式，或需新增，在下面数组追加一行即可，不要改其他代码。
-    // =====================================================================
-/*    private static final String[] TIMESTAMP_PATTERNS = {
-            "yyyy-MM-dd HH:mm:ss.SSSSSSSSS",   // 纳秒（9位小数），LogMiner 高精度输出
-            "yyyy-MM-dd HH:mm:ss.SSSSSS",      // 微秒（6位小数），Oracle TIMESTAMP 默认精度
-            "yyyy-MM-dd HH:mm:ss.SSS",         // 毫秒（3位小数）
-            "yyyy-MM-dd HH:mm:ss",             // 标准无小数
-            "yyyy-MM-dd HH:mm",                // 无秒
-            "yyyy-MM-dd",                      // 纯日期，自动补 00:00:00
-            "yyyy/MM/dd HH:mm:ss",             // 斜线分隔带时间
-            "yyyy/MM/dd",                      // 斜线分隔纯日期，自动补 00:00:00
-            // "MM/dd/yyyy HH:mm:ss",          // 示例：美式日期，按需启用
-    };*/
-
-
+// 无时区解析：按长度+关键字符位精确定位
+//
+// 各格式精确长度和关键字符：
+//   len=29, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSSSSSSSS"  纳秒9位
+//   len=26, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSSSSS"     微秒6位
+//   len=23, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSS"        毫秒3位
+//   len=19, charAt(4)='-'  → "yyyy-MM-dd HH:mm:ss"            标准无小数
+//   len=19, charAt(4)='/'  → "yyyy/MM/dd HH:mm:ss"            斜线带时间
+//   len=16               → "yyyy-MM-dd HH:mm"               无秒
+//   len=10, charAt(4)='-'  → "yyyy-MM-dd"                     纯日期
+//   len=10, charAt(4)='/'  → "yyyy/MM/dd"                     斜线纯日期
+// =====================================================================
     private java.time.LocalDateTime parseLocalDateTimeValue(String raw) {
-        for (int i = 0; i < TIMESTAMP_FORMATTERS.length; i++) {
-            try {
-                if (TIMESTAMP_IS_DATE_ONLY[i]) {
-                    return java.time.LocalDate.parse(raw, TIMESTAMP_FORMATTERS[i]).atStartOfDay();
+        if (raw == null || raw.isEmpty()) return null;
+        int len = raw.length();
+        try {
+            if (len == 29 && raw.charAt(19) == '.') {
+                return java.time.LocalDateTime.parse(raw, FMT_DATETIME_NS);
+            } else if (len == 26 && raw.charAt(19) == '.') {
+                return java.time.LocalDateTime.parse(raw, FMT_DATETIME_US);
+            } else if (len == 23 && raw.charAt(19) == '.') {
+                return java.time.LocalDateTime.parse(raw, FMT_DATETIME_MS);
+            } else if (len == 19 && raw.charAt(4) == '-') {
+                return java.time.LocalDateTime.parse(raw, FMT_DATETIME);
+            } else if (len == 19 && raw.charAt(4) == '/') {
+                return java.time.LocalDateTime.parse(raw, FMT_DATETIME_SLASH);
+            } else if (len == 16) {
+                return java.time.LocalDateTime.parse(raw, FMT_DATETIME_HM);
+            } else if (len == 10 && raw.charAt(4) == '-') {
+                return java.time.LocalDate.parse(raw, FMT_DATE).atStartOfDay();
+            } else if (len == 10 && raw.charAt(4) == '/') {
+                return java.time.LocalDate.parse(raw, FMT_DATE_SLASH).atStartOfDay();
+            }
+            // ★ 时间格式兜底：timestamp 字段里混入了 TIME 类型值
+            // 用 charAt(2) == ':' 判断是时间格式，避免和日期格式混淆
+            // 附加 EPOCH(1970-01-01) 凑成合法 LocalDateTime
+            else if (raw.charAt(2) == ':') {
+                if (len == 8) {
+                    return java.time.LocalTime.parse(raw, TIME_FMT_STANDARD)
+                            .atDate(java.time.LocalDate.of(1970, 1, 1));
+                } else if (len == 12 && raw.charAt(8) == '.') {
+                    return java.time.LocalTime.parse(raw, TIME_FMT_MILLISECOND)
+                            .atDate(java.time.LocalDate.of(1970, 1, 1));
+                } else if (len == 15 && raw.charAt(8) == '.') {
+                    return java.time.LocalTime.parse(raw, TIME_FMT_MICROSECOND)
+                            .atDate(java.time.LocalDate.of(1970, 1, 1));
                 }
-                return java.time.LocalDateTime.parse(raw, TIMESTAMP_FORMATTERS[i]);
-            } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            log.warn("[IceBergPool][tid={}] cannot parse timestamp '{}', returning null",
+                    Thread.currentThread().getId(), raw);
+            return null;
         }
-        log.warn("[IceBergPool][tid={}] cannot parse timestamp '{}', returning null",
-                Thread.currentThread().getId(), raw);
+        log.warn("[IceBergPool][tid={}] unrecognized timestamp format len={} val='{}', returning null",
+                Thread.currentThread().getId(), len, raw);
         return null;
     }
 
