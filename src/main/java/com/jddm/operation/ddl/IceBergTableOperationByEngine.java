@@ -8,6 +8,7 @@ import com.jddm.common.Constant;
 import com.jddm.common.ConstantColType;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
+import com.jddm.thread.OperationTotalSyncByIceBergThreadPool;
 import com.jddm.utils.KerberosAuthUtil;
 import com.publics.common.ConstantPubSet;
 import com.publics.common.ConstantPublic;
@@ -26,6 +27,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import static com.jddm.thread.OperationTotalSyncByIceBergThreadPool.*;
 
 public class IceBergTableOperationByEngine {
 
@@ -416,6 +419,27 @@ public class IceBergTableOperationByEngine {
             for (org.apache.iceberg.types.Types.NestedField f : iceBergTable.schema().columns()) {
                 GlobalSetConfInfo.columnTypeCache.put(setTableKeyName + "." + f.name(), f.type());
             }
+            List<org.apache.iceberg.types.Types.NestedField> cols = iceBergTable.schema().columns();
+            int colCount = cols.size();
+
+            String[] colNames = new String[colCount];
+            Map<String, Integer> colPosMap = new HashMap<>(colCount * 2);
+            @SuppressWarnings("unchecked")
+            java.util.function.Function<String, Object>[] converters =
+                    new java.util.function.Function[colCount];
+
+            for (int i = 0; i < colCount; i++) {
+                org.apache.iceberg.types.Types.NestedField f = cols.get(i);
+                String name = f.name(); // schema 里已经是 lowercase
+                colNames[i] = name;
+                colPosMap.put(name, i);
+                converters[i] = buildConverter(f.type());
+            }
+
+            GlobalSetConfInfo.tableColumnNamesCache.put(setTableKeyName, colNames);
+            GlobalSetConfInfo.tableColumnPosCache.put(setTableKeyName, colPosMap);
+            GlobalSetConfInfo.tableColumnConvertersCache.put(setTableKeyName, converters);
+            log.info("[DDL] column acceleration cache has been built. table={} cols={}", setTableKeyName, colCount);
             log.info("[DDL] columnTypeCache filled table={} cols={}", setTableKeyName, iceBergTable.schema().columns().size());
 
             socketReturnVo.setReturnFlag(true);
@@ -586,5 +610,85 @@ public class IceBergTableOperationByEngine {
     private static int safeParseInt(String s, int defaultVal) {
         if (s == null || s.trim().isEmpty()) return defaultVal;
         try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return defaultVal; }
+    }
+    /**
+     * 根据 Iceberg 字段类型，预先生成对应的转换函数。
+     * 这样热路径只需 converters[i].apply(rawValue)，
+     * 彻底消除每列每行的 instanceof 链判断。
+     */
+    @SuppressWarnings("unchecked")
+/**
+ * 根据 Iceberg 字段类型预构建转换函数。
+ * 放在本类中，直接复用类内已有的 DateTimeFormatter 和 parseTimestampValue 方法，
+ * 避免跨类引用的编译问题。
+ */
+    public static java.util.function.Function<String, Object> buildConverter(
+            org.apache.iceberg.types.Type fieldType) {
+
+        if (fieldType instanceof org.apache.iceberg.types.Types.StringType) {
+            return (String v) -> v;
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.BooleanType) {
+            return (String v) -> "1".equals(v.trim())
+                    || "true".equalsIgnoreCase(v.trim())
+                    || "t".equalsIgnoreCase(v.trim());
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.LongType) {
+            return (String v) -> {
+                String t = v.trim();
+                try { return Long.parseLong(t); }
+                catch (NumberFormatException e1) {
+                    try { return new java.math.BigDecimal(t).longValueExact(); }
+                    catch (Exception e2) {
+                        int dot = t.indexOf('.');
+                        return Long.parseLong(dot >= 0 ? t.substring(0, dot) : t);
+                    }
+                }
+            };
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.IntegerType) {
+            return (String v) -> Integer.parseInt(v.trim());
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.DecimalType) {
+            org.apache.iceberg.types.Types.DecimalType dt =
+                    (org.apache.iceberg.types.Types.DecimalType) fieldType;
+            int scale = dt.scale();
+            return (String v) -> new java.math.BigDecimal(v.trim())
+                    .setScale(scale, java.math.RoundingMode.HALF_UP);
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.FloatType) {
+            return (String v) -> Float.parseFloat(v.trim());
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.DoubleType) {
+            return (String v) -> Double.parseDouble(v.trim());
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.DateType) {
+            return (String v) -> {
+                String t = v.trim();
+                if (t.length() > 10 && t.charAt(10) == ' ') t = t.substring(0, 10);
+                try { return java.time.LocalDate.parse(t, FMT_DATE); }       catch (Exception ignored) {}
+                try { return java.time.LocalDate.parse(t, FMT_DATE_SLASH); } catch (Exception ignored) {}
+                return null;
+            };
+
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.TimeType) {
+        return (String v) -> {
+            String t = v.trim();
+            int spaceIdx = t.indexOf(' ');
+            if (spaceIdx >= 0) t = t.substring(spaceIdx + 1);
+            try { return java.time.LocalTime.parse(t, java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS")); } catch (Exception ignored) {}
+            try { return java.time.LocalTime.parse(t, java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")); } catch (Exception ignored) {}
+            try { return java.time.LocalTime.parse(t); } catch (Exception ignored) {}
+            return null;
+        };
+
+    } else if (fieldType instanceof org.apache.iceberg.types.Types.TimestampType) {
+        boolean withZone = ((org.apache.iceberg.types.Types.TimestampType) fieldType).shouldAdjustToUTC();
+        // 跨类调用，parseTimestampValue 改为 static 后可以直接引用
+        return (String v) -> OperationTotalSyncByIceBergThreadPool.parseTimestampValue(v.trim(), withZone);
+
+    } else {
+        return (String v) -> v;
+    }
     }
 }

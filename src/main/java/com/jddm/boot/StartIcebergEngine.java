@@ -552,23 +552,34 @@ private static boolean initializeServices() throws InitializationException {
     private static void putWithMemoryGuard(SequencedPackage item) throws InterruptedException {
         Runtime rt = Runtime.getRuntime();
         while (true) {
+            long blockStart = 0;
+
             long maxMemory   = rt.maxMemory();
             long totalMemory = rt.totalMemory();
             long freeMemory  = rt.freeMemory();
             long usedMemory  = totalMemory - freeMemory;
             double usageRatio = (double) usedMemory / maxMemory;
 
-            if (usageRatio < 0.90) {
+            if (usageRatio < 0.80) {
                 break;
             }
 
-            System.out.printf("[MemGuard] heap high, block producer. used=%.1f%% usedMB=%dMB freeMB=%dMB%n",
-                    usageRatio * 100,
-                    usedMemory / 1024 / 1024,
-                    (maxMemory - usedMemory) / 1024 / 1024);
+            if (blockStart == 0) {
+                blockStart = System.currentTimeMillis();
+            }
+            long blockedMs = System.currentTimeMillis() - blockStart;
 
-            System.gc(); // 达到 90% 才触发，不会频繁
-            Thread.sleep(500); // gc 需要时间，等久一点再检测
+            // 每 5 秒打一次日志，方便观察背压持续时间
+            if (blockedMs % 5000 < 500) {
+                System.out.printf("[MemGuard] heap high, blocking producer. used=%.1f%% usedMB=%dMB freeMB=%dMB blockedMs=%d%n",
+                        usageRatio * 100,
+                        usedMemory / 1024 / 1024,
+                        (maxMemory - usedMemory) / 1024 / 1024,
+                        blockedMs);
+            }
+
+//            System.gc(); // 达到 90% 才触发，不会频繁
+            Thread.sleep(200); // gc 需要时间，等久一点再检测
         }
         GlobalSetConfInfo.icebergEngineOperationQueue.put(item);
     }

@@ -30,17 +30,17 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
-    public Logger log = LogManager.getLogger(OperationTotalSyncByIceBergThreadPool.class);
+    public static Logger log = LogManager.getLogger(OperationTotalSyncByIceBergThreadPool.class);
 
     // 原来的 TIMESTAMP_PATTERNS 字符串数组删掉，换成预编译好的 Formatter 数组
 // DateTimeFormatter 是线程安全的，直接 static final 共享
-    private static final java.time.format.DateTimeFormatter TIME_FMT_STANDARD =
+    public static final java.time.format.DateTimeFormatter TIME_FMT_STANDARD =
             java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss");
     private static final java.time.format.DateTimeFormatter DATE_FMT_SLASH =
             java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd");
-    private static final java.time.format.DateTimeFormatter TIME_FMT_MICROSECOND =
+    public static final java.time.format.DateTimeFormatter TIME_FMT_MICROSECOND =
             java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS");
-    private static final java.time.format.DateTimeFormatter TIME_FMT_MILLISECOND =
+    public static final java.time.format.DateTimeFormatter TIME_FMT_MILLISECOND =
             java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
     // 对应标记哪些是纯日期格式（没有时间部分，匹配后要补 00:00:00）
     private static final boolean[] TIMESTAMP_IS_DATE_ONLY = {
@@ -52,8 +52,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
     private static final java.time.format.DateTimeFormatter FMT_DATETIME_MS   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
     private static final java.time.format.DateTimeFormatter FMT_DATETIME      = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final java.time.format.DateTimeFormatter FMT_DATETIME_HM   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
-    private static final java.time.format.DateTimeFormatter FMT_DATE          = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
-    private static final java.time.format.DateTimeFormatter FMT_DATE_SLASH    = java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd");
+    public static final java.time.format.DateTimeFormatter FMT_DATE          = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    public static final java.time.format.DateTimeFormatter FMT_DATE_SLASH    = java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd");
     private static final java.time.format.DateTimeFormatter FMT_DATETIME_SLASH= java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd HH:mm:ss");
     // 带时区
     private static final java.time.format.DateTimeFormatter FMT_ZDT_NS        = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS XXX");
@@ -162,6 +162,28 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
      * Build RowOperation list from packet. baseOffset = pktSeq * 1M for CDC ordering.
      * ★ 改动：新增 isFullLoad 参数，传递到 buildOperation，用于标记全量 insert
      */
+    /**
+     * 从 CDC 数据包中解析出 RowOperation 列表。
+     *
+     * 改造重点：
+     *   全量路径（isFullLoad=true）下，彻底消除热路径中的三大 CPU 杀手：
+     *     1. 每列每行的 String 拼接（schemaKey + "." + colName）→ 改为 colPosMap 直接查位置
+     *     2. 每列每行的 instanceof 链判断           → 改为 converters[colPos] 预绑定 lambda
+     *     3. setField(String) 内部 HashMap 查找     → 改为 set(int pos) 数组直接赋值
+     *
+     * 增量路径（isFullLoad=false）逻辑与原来完全一致，不受影响。
+     *
+     * @param opType                   操作类型（已 toUpperCase）
+     * @param isFullLoad               是否为全量加载（原始 rawOpType 为小写 "i"）
+     * @param rowsNum                  本次数据包的行数
+     * @param columnsNum               本次数据包的列数
+     * @param rowUdbColumnMap          key="rowNo-colNo" 的列值 Map
+     * @param schemaKeyByParquet       "schema.table" 格式的表键
+     * @param schemaKeyByParquetThreadID  "schema.table.threadId" 格式的线程级缓存键
+     * @param colNameByNumberKey       列号→列名映射（兼容外部引用，内部已不依赖此变量）
+     * @param pktSeq                   数据包全局序列号，用于生成 binlogOffset
+     * @return 解析出的 RowOperation 列表
+     */
     private List<RowOperation> buildRowOperations(
             String opType,
             boolean isFullLoad,
@@ -174,9 +196,28 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             long pktSeq) {
 
         List<RowOperation> result = new ArrayList<>(rowsNum);
+        // binlogOffset 基址 = pktSeq * 1M，保证跨包的行级偏移不重叠
         long baseOffset = pktSeq * 1_000_000L;
+        // 复用 StringBuilder，避免在行列双循环中反复分配 key 对象
         StringBuilder mapKeyBuilder = new StringBuilder(16);
 
+        // ★ 改造关键：全量路径下，在行循环外一次性取出预计算结构，后续只做数组/Map 查找
+        //   这两个 Map 在 importHiveTable_IceBerg_Table 建表时已填充完毕，此处 O(1) 取出
+        java.util.function.Function<String, Object>[] converters = null;
+        Map<String, Integer> colPosMap = null;
+        if (isFullLoad) {
+            converters = GlobalSetConfInfo.tableColumnConvertersCache.get(schemaKeyByParquet);
+            colPosMap  = GlobalSetConfInfo.tableColumnPosCache.get(schemaKeyByParquet);
+            // 防御性校验：缓存未命中时降级到原有逻辑（不影响正确性，仅影响性能）
+            if (converters == null || colPosMap == null) {
+                log.warn("[IceBergPool][tid={}] 全量列级缓存未命中，降级到 columnTypeCache 模式。table={}",
+                        Thread.currentThread().getId(), schemaKeyByParquet);
+                converters = null;
+                colPosMap  = null;
+            }
+        }
+
+        // debug 日志缓冲区：只有开启 debugLog 时才分配，避免生产环境 StringBuilder 开销
         StringBuilder debugColLogs = null;
         if (Constant.debugLogEnabled) {
             debugColLogs = new StringBuilder(1024);
@@ -184,6 +225,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
         for (int rowNo = 0; rowNo < rowsNum; rowNo++) {
 
+            // 每行创建新的 GenericRecord；全量路径只需 newRecord，oldRecord 直接跳过分配
             GenericRecord newRecord = GenericRecord.create(
                     GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
             GenericRecord oldRecord = isFullLoad ? null :
@@ -191,6 +233,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 
             boolean hasNewData = false;
             boolean hasOldData = false;
+            // mergerColLimit 用于 Merger 模式下只读前半段列（U/I/D 混合包）
             int mergerColLimit = columnsNum;
 
             if (Constant.debugLogEnabled) {
@@ -198,13 +241,18 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             }
 
             for (int colNo = 0; colNo < columnsNum; colNo++) {
+
+                // 拼装 rowUdbColumnMap 的 key，StringBuilder 复用避免分配
                 mapKeyBuilder.setLength(0);
                 mapKeyBuilder.append(rowNo).append('-').append(colNo);
+                // ★ toString() 仍不可避免，但相比 String.format 已最优
                 Udb_BcolumnVo columnInfo = rowUdbColumnMap.get(mapKeyBuilder.toString());
-                // colNameByNumberKey 保留赋值，兼容外部可能存在的引用
-                String colNameLower = columnInfo.getColumnName().toLowerCase();
-                if (columnInfo.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
 
+                // 兼容 colNameByNumberKey 外部引用（原逻辑保留，不影响热路径）
+                String colNameLower = columnInfo.getColumnName().toLowerCase();
+
+                // 处理 Merger 特殊控制列（用于同一包内混合 I/U/D 的场景）
+                if (columnInfo.getColumnName().equals(ConstantPubSet.MergerColKeyName)) {
                     switch (columnInfo.getColumnValue().toUpperCase()) {
                         case "I":
                             opType = "I";
@@ -222,6 +270,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     }
                     continue;
                 }
+
+                // 超出 mergerColLimit 的列跳过（Merger 分包模式）
                 if (colNo > mergerColLimit) {
                     continue;
                 }
@@ -237,12 +287,49 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 }
 
                 // =========================================================
-                // 全量加载路径：CDC 层数据均为 String，需按 schema 字段类型转换。
+                // 全量加载路径（isFullLoad = true）
+                //
+                // 改造前：每列每行做一次 String 拼接取类型 + instanceof 链判断
+                // 改造后：
+                //   1. colPosMap.get(colNameLower)  → 直接拿到列在 schema 中的位置索引
+                //   2. converters[colPos].apply(raw) → 预绑定 lambda，无 instanceof
+                //   3. newRecord.set(colPos, val)   → 数组下标赋值，无 HashMap 查找
                 // =========================================================
                 if (isFullLoad) {
                     String rawVal = columnInfo.getColumnValue();
-                    if (rawVal != null && !rawVal.isEmpty()) {
-                        // 直接 O(1) 查缓存，不再每列遍历 schema
+                    if (rawVal == null || rawVal.isEmpty()) {
+                        hasNewData = true;
+                        continue;
+                    }
+
+                    // ★ 快速路径：预计算缓存命中
+                    if (converters != null && colPosMap != null) {
+                        Integer colPos = colPosMap.get(colNameLower);
+                        if (colPos == null) {
+                            // schema 中不存在此列（DDL 变更场景），跳过，不报错
+                            if (Constant.debugLogEnabled) {
+                                log.warn("[IceBergPool][tid={}] 全量列 {} 不在 colPosMap 中，跳过。table={}",
+                                        Thread.currentThread().getId(), colNameLower, schemaKeyByParquet);
+                            }
+                            hasNewData = true;
+                            continue;
+                        }
+                        Object convertedVal;
+                        try {
+                            convertedVal = converters[colPos].apply(rawVal);
+                        } catch (Exception e) {
+                            // 转换异常时降级保留原始字符串，不中断整行处理
+                            log.warn("[IceBergPool][tid={}] 全量列转换异常，降级为 String。col={} val={} err={}",
+                                    Thread.currentThread().getId(), colNameLower, rawVal, e.getMessage());
+                            convertedVal = rawVal;
+                        }
+                        if (convertedVal != null) {
+                            // ★ 核心：用 int 位置赋值，GenericRecord 内部直接数组操作
+                            newRecord.set(colPos, convertedVal);
+                        }
+                    } else {
+                        // ★ 降级路径：预计算缓存未命中，回退到原有 columnTypeCache + setField 方式
+                        //   功能完全正确，性能低于快速路径，但不影响数据完整性
                         org.apache.iceberg.types.Type fieldType =
                                 GlobalSetConfInfo.columnTypeCache.get(schemaKeyByParquet + "." + colNameLower);
                         Object convertedVal = (fieldType != null)
@@ -252,38 +339,44 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                             newRecord.setField(colNameLower, convertedVal);
                         }
                     }
+
                     hasNewData = true;
-                    continue;
+                    continue; // 全量路径列处理完毕，直接进入下一列
                 }
 
                 // =========================================================
-                // 增量 CDC 路径：通过 cflag 区分前镜像 / 后镜像。
+                // 增量 CDC 路径（isFullLoad = false）
+                // 逻辑与原有代码完全一致，通过 cflag 区分前镜像 / 后镜像。
                 // =========================================================
                 int cflag = columnInfo.getCflag();
                 if ((cflag & 1) == 1) {
-                    // before image
+                    // before image（前镜像）
                     fillRecord(oldRecord, columnInfo, schemaKeyByParquet, opType);
                     hasOldData = true;
                 } else {
-                    // after image
+                    // after image（后镜像）
                     fillRecord(newRecord, columnInfo, schemaKeyByParquet, opType);
                     hasNewData = true;
                 }
-            }
+
+            } // end for colNo
 
             if (Constant.debugLogEnabled && debugColLogs.length() > 0) {
                 log.info("{}", debugColLogs.toString());
             }
 
+            // 行级 binlogOffset = 包基址 + 行内偏移，确保跨包跨行的全局单调性
             long offset = baseOffset + rowNo;
-            // ★ 改动：传递 isFullLoad 到 buildOperation
-            List<RowOperation> ops = buildOperation(opType, isFullLoad, newRecord, oldRecord,
+
+            // ★ 改造保留：isFullLoad 标记透传到 buildOperation，供 flushBatch 走全量快速路径
+            List<RowOperation> ops = buildOperation(
+                    opType, isFullLoad, newRecord, oldRecord,
                     hasNewData, hasOldData, offset, schemaKeyByParquet);
             result.addAll(ops);
-        }
+
+        } // end for rowNo
 
         return result;
-
     }
 
     /**
@@ -687,7 +780,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 //   len=26, charAt(19)='.' → "yyyy-MM-dd HH:mm:ss.SSSSSS"            微秒无时区（兜底UTC）
 //   其余                   → 无时区格式（兜底UTC）
 // =====================================================================
-    private Object parseTimestampValue(String raw, boolean withZone) {
+    public static Object parseTimestampValue(String raw, boolean withZone) {
         if (raw == null || raw.isEmpty()) return null;
         if (withZone) {
             int len = raw.length();
@@ -728,7 +821,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
 //   len=10, charAt(4)='-'  → "yyyy-MM-dd"                     纯日期
 //   len=10, charAt(4)='/'  → "yyyy/MM/dd"                     斜线纯日期
 // =====================================================================
-    private java.time.LocalDateTime parseLocalDateTimeValue(String raw) {
+    private static java.time.LocalDateTime parseLocalDateTimeValue(String raw) {
         if (raw == null || raw.isEmpty()) return null;
         int len = raw.length();
         try {

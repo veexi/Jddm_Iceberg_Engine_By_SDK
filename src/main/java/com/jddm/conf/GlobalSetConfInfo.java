@@ -17,6 +17,24 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class GlobalSetConfInfo {
+    /**
+     * key = "schema.table"，value = 该表的列名数组（全小写，按 schema 列顺序）
+     * 避免热路径反复 toLowerCase() 和字符串拼接
+     */
+    public static Map<String, String[]> tableColumnNamesCache = new ConcurrentHashMap<>();
+
+    /**
+     * key = "schema.table"，value = 该表的类型转换器数组（按列位置索引）
+     * 热路径直接 converters[colIdx].apply(rawValue)，消灭 instanceof 链
+     */
+    public static Map<String, java.util.function.Function<String, Object>[]> tableColumnConvertersCache = new ConcurrentHashMap<>();
+
+    /**
+     * key = "schema.table"，value = 列名 → 列位置 的快速查找 Map
+     * 用于将 colName 转换为 GenericRecord.set(int pos) 的位置
+     */
+    public static Map<String, Map<String, Integer>> tableColumnPosCache = new ConcurrentHashMap<>();
+
 
     public static Map<String,Schema> IceBergSchemaCahceMap = new ConcurrentHashMap<>();
     public static Map<String,ImmutableList.Builder<GenericRecord>> IceBergSchemaImmuTableRecordMap = new ConcurrentHashMap<>();
