@@ -33,8 +33,7 @@ import java.util.stream.Collectors;
 public class IceBergBatchOperationHandler {
 
     private static final Logger log = LogManager.getLogger(IceBergBatchOperationHandler.class);
-/*    private static final java.util.concurrent.Semaphore WRITE_SEMAPHORE =
-            new java.util.concurrent.Semaphore(2);*/
+
     private static final Map<String, java.util.concurrent.locks.ReentrantLock> tableFlushLocks =
             new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -71,7 +70,7 @@ public class IceBergBatchOperationHandler {
 
         List<String> pkNames = GlobalSetConfInfo.TablePkColCacheMap.get(tableKeyName);
 
-        // 无主键表：轨迹模式，所有操作直接 Append
+        // No-PK table: trajectory mode, append all ops directly
         if (pkNames == null || pkNames.isEmpty()) {
             log.info("[IceBergBatch][tid={}][Trajectory] No PK table, writing all ops as audit records, table={} ops={}",
                     Thread.currentThread().getId(), tableKeyName, allOps.size());
@@ -110,12 +109,13 @@ public class IceBergBatchOperationHandler {
             return new FlushMetrics(dataFiles.size(), 0, dataPaths, Collections.emptyList());
         }
 
-        // ★ 改动：全量 insert（rawOpType="i"）快速路径，跳过 mergeByPrimaryKey 和 delete 文件生成
-        // 由于批次互斥，这里也用 O(1) 探测
+        // Full-load fast path: skip mergeByPrimaryKey and delete file generation.
+        // This branch is only reached when flushBatch is called directly (e.g. in tests).
+        // Normal full-load traffic goes through writeFullLoadStreamFromQueue in flushAllThreadsForTable.
         boolean isFullLoad = allOps.get(0).isFullLoad();
         if (isFullLoad) {
             int totalOps = allOps.size();
-            log.info("[IceBergBatch][tid={}][FullLoad] detected full load, intercepted for local cache. table={} ops={}",
+            log.info("[IceBergBatch][tid={}][FullLoad] detected full load batch, writing to local cache. table={} ops={}",
                     Thread.currentThread().getId(), tableKeyName, totalOps);
 
             if (totalOps == 0) {
@@ -123,9 +123,8 @@ public class IceBergBatchOperationHandler {
             }
 
             long writeStart = System.currentTimeMillis();
-            // ★ 直接传 allOps，方法内部流式处理，不再在外面 collect 成 records List
             List<DataFile> dataFiles = writePartitionedDataFilesToLocal(iceBergTable, allOps, tableKeyName);
-            allOps.clear(); // ★ 写完立刻释放
+            allOps.clear();
             long writeEnd = System.currentTimeMillis();
 
             List<String> dataPaths = dataFiles.stream()
@@ -147,8 +146,8 @@ public class IceBergBatchOperationHandler {
         if ("transaction".equals(Constant.icebergWriteMode)) {
 
             // ============================================================
-            // COW 模式（batch）：每批次写入时实时扫描旧文件并覆盖重写，彻底去重
-            // 适用于 Hive 3.x 等不支持 equality delete 的查询引擎
+            // COW batch mode: scan existing files and rewrite to deduplicate.
+            // Suitable for Hive 3.x which does not support equality delete.
             // ============================================================
             if ("batch".equals(Constant.cowMode)) {
                 log.info("[IceBergBatch][tid={}][COW] flush start table={} ops={} pkNames={}",
@@ -159,7 +158,7 @@ public class IceBergBatchOperationHandler {
                         Thread.currentThread().getId(), tableKeyName,
                         mergeResult.insertRecords.size(), mergeResult.deleteRecords.size());
 
-                // 1. 收集本次所有涉及的 PK（insert + delete 两侧）
+                // 1. Collect all affected PKs from both insert and delete sides
                 Set<String> affectedPks = new HashSet<>();
                 for (GenericRecord r : mergeResult.insertRecords) {
                     affectedPks.add(buildPkString(r, pkNames));
@@ -168,7 +167,7 @@ public class IceBergBatchOperationHandler {
                     affectedPks.add(buildPkString(r, pkNames));
                 }
 
-                // 2. 扫描 Iceberg 现有数据，只读出包含 affected PK 的文件，过滤掉这些 PK
+                // 2. Scan existing Iceberg data, filter out affected PKs
                 List<GenericRecord> survivingRecords = new ArrayList<>();
                 List<DataFile> oldDataFiles = new ArrayList<>();
 
@@ -195,7 +194,7 @@ public class IceBergBatchOperationHandler {
                     }
                 }
 
-                // 3. 合并：surviving 旧数据 + 本次新 insert
+                // 3. Merge: surviving old records + new inserts from this batch
                 survivingRecords.addAll(mergeResult.insertRecords);
 
                 log.info("[IceBergBatch][tid={}][COW] table={} oldDataFiles={} survivingRecords={} newInserts={}",
@@ -203,7 +202,7 @@ public class IceBergBatchOperationHandler {
                         oldDataFiles.size(), survivingRecords.size() - mergeResult.insertRecords.size(),
                         mergeResult.insertRecords.size());
 
-                // 4. 没有旧文件被命中：直接 Append 新数据
+                // 4. No old files hit: directly append new data
                 if (oldDataFiles.isEmpty()) {
                     if (mergeResult.insertRecords.isEmpty()) {
                         log.info("[IceBergBatch][tid={}][COW] nothing to write table={}",
@@ -222,14 +221,14 @@ public class IceBergBatchOperationHandler {
                     return new FlushMetrics(newDataFiles.size(), 0, dataPaths, Collections.emptyList());
                 }
 
-                // 5. 写新的合并后 data file
+                // 5. Write new merged data file
                 List<DataFile> newDataFiles = survivingRecords.isEmpty()
                         ? Collections.emptyList()
                         : writePartitionedDataFiles(iceBergTable, survivingRecords, tableKeyName);
                 List<String> dataPaths = newDataFiles.stream()
                         .map(df -> df.path().toString()).collect(Collectors.toList());
 
-                // 6. OverwriteFiles 原子提交：删旧文件，加新文件，无 delete file
+                // 6. Atomic OverwriteFiles commit: remove old files, add new files, no delete file
                 int maxRetry = 3;
                 for (int attempt = 1; attempt <= maxRetry; attempt++) {
                     try {
@@ -254,7 +253,7 @@ public class IceBergBatchOperationHandler {
 
             } else {
                 // ============================================================
-                // RowDelta 模式（timer / none）：写 equality delete file
+                // RowDelta mode (timer / none): write equality delete file
                 // ============================================================
                 log.info("[IceBergBatch][tid={}][RowDelta] flush start table={} ops={} pkNames={} cowMode={}",
                         Thread.currentThread().getId(), tableKeyName, allOps.size(), pkNames, Constant.cowMode);
@@ -290,7 +289,7 @@ public class IceBergBatchOperationHandler {
             }
 
         } else {
-            // trajectory 模式：纯 Append
+            // Trajectory mode: pure Append
             List<GenericRecord> recordsToWrite = allOps.stream()
                     .map(op -> op.getNewRecord() != null ? op.getNewRecord() : op.getOldRecord())
                     .collect(Collectors.toList());
@@ -308,7 +307,7 @@ public class IceBergBatchOperationHandler {
         }
     }
 
-    // ========== COW 辅助方法 ==========
+    // ========== COW helpers ==========
 
     private static final ThreadLocal<StringBuilder> PK_SB_CACHE = ThreadLocal.withInitial(() -> new StringBuilder(512));
 
@@ -370,7 +369,7 @@ public class IceBergBatchOperationHandler {
             switch (op.getType()) {
                 case INSERT:
                     finalInserts.add(op.getNewRecord());
-                    finalDeletes.add(op.getNewRecord()); // blind upsert：按 PK 清掉 Iceberg 里已有的旧行
+                    finalDeletes.add(op.getNewRecord()); // blind upsert: evict existing row by PK
                     break;
 
                 case DELETE:
@@ -439,7 +438,7 @@ public class IceBergBatchOperationHandler {
         return incoming;
     }
 
-    // ========== 文件写入 ==========
+    // ========== File write helpers ==========
 
     public static DataFile writeDataFile(Table table,
                                          List<GenericRecord> records,
@@ -457,7 +456,6 @@ public class IceBergBatchOperationHandler {
 
         try (Closeable toClose = appender) {
             try {
-                // ★ 改动：逐条 add，让 Parquet 按 page size 自动 flush，避免 buffer 无限堆积 OOM
                 for (GenericRecord record : records) {
                     appender.add(record);
                 }
@@ -589,7 +587,6 @@ public class IceBergBatchOperationHandler {
                     .build();
 
             try {
-                // ★ 改动：逐条 add 替换 addAll，让 Parquet 按 page size 自动 flush buffer，避免 OOM
                 for (GenericRecord row : entry.getValue()) {
                     appender.add(row);
                 }
@@ -634,21 +631,21 @@ public class IceBergBatchOperationHandler {
         File cacheDir = new File(Constant.basicWorkPath, "FileCache/" + tableKeyName);
         if (!cacheDir.exists()) cacheDir.mkdirs();
 
-        // 策略：针对宽表自适应调优 Parquet 参数
+        // Adaptive Parquet tuning for wide tables
         int colCount = table.schema().columns().size();
-        String rowGroupSize = "134217728"; // 默认 128MB
-        String pageSize = "1048576";     // 默认 1MB
+        String rowGroupSize = "134217728"; // default 128MB
+        String pageSize = "1048576";       // default 1MB
         if (colCount > 100) {
             log.info("[IceBergBatch][tid={}] Wide table detected (cols={}), tuning Parquet memory for safety.",
                     Thread.currentThread().getId(), colCount);
-            rowGroupSize = "33554432"; // 宽表降至 32MB，强制频繁刷盘释放内存
-            pageSize = "524288";      // 页大小降至 512KB
+            rowGroupSize = "33554432"; // 32MB for wide tables
+            pageSize = "524288";       // 512KB
         }
 
         List<DataFile> resultDataFiles = new ArrayList<>();
 
         if (!isPartitioned) {
-            // ================== 非分区表流式直写 ==================
+            // Non-partitioned: single writer, stream directly
             File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
             org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
 
@@ -666,7 +663,8 @@ public class IceBergBatchOperationHandler {
                     if (rec != null) {
                         appender.add(rec);
                     }
-                    allOps.set(i, null); // ★ 核心：写完立即断开强引用，让 600 列的数据对象在 YGC 中被回收
+                    // Null out the reference immediately after write so GC can reclaim it
+                    allOps.set(i, null);
                 }
             } finally {
                 appender.close();
@@ -680,8 +678,7 @@ public class IceBergBatchOperationHandler {
             resultDataFiles.add(df);
 
         } else {
-            // ================== 分区表流式并行直写 ==================
-            // 维护本批次所有分区的 Writer 上下文
+            // Partitioned: maintain one writer per partition, stream row by row
             Map<PartitionKey, WriterContext> writersMap = new HashMap<>();
             PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
 
@@ -694,11 +691,9 @@ public class IceBergBatchOperationHandler {
                         continue;
                     }
 
-                    // 1. 计算分区
                     reusablePKey.partition(rec);
-                    PartitionKey currentKey = reusablePKey.copy(); // 只有 key 需要 copy，数据不需要
+                    PartitionKey currentKey = reusablePKey.copy();
 
-                    // 2. 获取或创建该分区的 Writer
                     WriterContext context = writersMap.get(currentKey);
                     if (context == null) {
                         File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
@@ -714,12 +709,11 @@ public class IceBergBatchOperationHandler {
                         writersMap.put(currentKey, context);
                     }
 
-                    // 3. 执行写入并立即释放引用
                     context.appender.add(rec);
-                    allOps.set(i, null); // ★ 核心：写完立即断开强引用
+                    // Null out immediately so GC can reclaim the record
+                    allOps.set(i, null);
                 }
             } finally {
-                // 4. 安全关闭所有 Writer 并收集 Metrics
                 for (Map.Entry<PartitionKey, WriterContext> entry : writersMap.entrySet()) {
                     PartitionKey pKey = entry.getKey();
                     WriterContext ctx = entry.getValue();
@@ -752,68 +746,120 @@ public class IceBergBatchOperationHandler {
                         k -> new java.util.concurrent.locks.ReentrantLock());
         tableLock.lock();
         try {
-            List<RowOperation> allOps = new ArrayList<>();
-            List<String> keysToRemove = new ArrayList<>();
-
             List<String> sortedKeys = GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.keySet().stream()
                     .filter(k -> k.startsWith(tableKeyName + "."))
                     .sorted()
                     .collect(Collectors.toList());
 
+            // ---------------------------------------------------------------
+            // Probe the first element of the first non-empty queue to detect
+            // full-load vs incremental mode. O(1), does not consume the queue.
+            // Full-load path: queues are consumed directly by writeFullLoadStreamFromQueue,
+            //   so we must NOT drainTo allOps — doing so would double memory usage.
+            // Incremental path: drainTo allOps as before for cross-thread sort + PK merge.
+            // ---------------------------------------------------------------
+            boolean isAllFullLoad = false;
             for (String key : sortedKeys) {
-                java.util.concurrent.LinkedBlockingDeque<RowOperation> queue =
+                LinkedBlockingDeque<RowOperation> queue =
                         GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(key);
-                if (queue == null) continue;
-                List<RowOperation> drained = new ArrayList<>();
-                synchronized (queue) {
-                    queue.drainTo(drained);
-                }
-                if (!drained.isEmpty()) {
-                    allOps.addAll(drained);
-                    keysToRemove.add(key);
+                if (queue == null || queue.isEmpty()) continue;
+                RowOperation first = queue.peekFirst();
+                if (first != null) {
+                    isAllFullLoad = first.isFullLoad();
+                    break;
                 }
             }
 
-            if (allOps.isEmpty()) return;
-
-            // 由于每个批次只能是纯全量或者纯增量，不存在混合情况，直接取第一个元素探测即可 (O(1))
-            boolean isAllFullLoad = allOps.get(0).isFullLoad();
+            // allOps is only populated for the incremental path
+            List<RowOperation> allOps = new ArrayList<>();
+            List<String> keysToRemove = new ArrayList<>();
 
             if (!isAllFullLoad) {
-                // 跨线程全局排序，保证 binlog 顺序正确性，这步不能省
-                allOps.sort(Comparator.comparingLong(RowOperation::getBinlogOffset));
-            } else {
-                if (Constant.debugLogEnabled) {
-                    log.info("[IceBergBatch][tid={}] allOps are full load, skip sorting for table={}", Thread.currentThread().getId(), tableKeyName);
+                // Incremental: drain all thread queues into allOps for global sort + PK merge
+                for (String key : sortedKeys) {
+                    LinkedBlockingDeque<RowOperation> queue =
+                            GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(key);
+                    if (queue == null) continue;
+                    List<RowOperation> drained = new ArrayList<>();
+                    synchronized (queue) {
+                        queue.drainTo(drained);
+                    }
+                    if (!drained.isEmpty()) {
+                        allOps.addAll(drained);
+                        keysToRemove.add(key);
+                    }
                 }
+                if (allOps.isEmpty()) return;
+            } else {
+                // Full-load: do NOT drain queues; collect keys for cache cleanup only
+                for (String key : sortedKeys) {
+                    LinkedBlockingDeque<RowOperation> queue =
+                            GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(key);
+                    if (queue != null && !queue.isEmpty()) {
+                        keysToRemove.add(key);
+                    }
+                }
+                if (keysToRemove.isEmpty()) return;
             }
 
-            int totalOps = allOps.size();
-            int batchMaxSize = Constant.flushBatchMaxSize;
+            int totalOps = isAllFullLoad ? keysToRemove.size() : allOps.size();
             int flushedUntil = 0;
 
-            log.info("[IceBergBatch][tid={}] flush start table={} totalOps={} isAllFullLoad={} batchMaxSize={}",
-                    Thread.currentThread().getId(), tableKeyName, totalOps, isAllFullLoad, batchMaxSize);
+            log.info("[IceBergBatch][tid={}] flush start table={} isAllFullLoad={} keysCount={}",
+                    Thread.currentThread().getId(), tableKeyName, isAllFullLoad, keysToRemove.size());
 
             try {
                 if (isAllFullLoad) {
-                    // 全量模式：直接全量提交，不进行 subList 切分，避免数组拷贝和 CPU 开销
-                    String batchId = UUID.randomUUID().toString().substring(0, 8);
-                    log.info("[IceBergBatch][tid={}] >>> batchId={} table={} [FullLoad Direct Flush] totalOps={}",
-                            Thread.currentThread().getId(), batchId, tableKeyName, totalOps);
+                    // --------------------------------------------------------
+                    // Full-load path:
+                    //   Stream directly from each thread queue into local Parquet files.
+                    //   allOps is intentionally never populated here — this eliminates
+                    //   the intermediate List that was the root cause of OOM on wide tables.
+                    //   Each record is poll()'d, written, and immediately eligible for GC.
+                    // --------------------------------------------------------
+                    Table iceBergTable = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKeyName);
+                    if (iceBergTable == null) {
+                        throw new IllegalStateException("[FullLoad] table not found: " + tableKeyName);
+                    }
 
-                    FlushMetrics metrics = flushBatch(tableKeyName, tableKeyName, allOps);
-                    flushedUntil = totalOps;
-                    allOps.clear();
+                    for (String key : keysToRemove) {
+                        LinkedBlockingDeque<RowOperation> queue =
+                                GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(key);
+                        if (queue == null || queue.isEmpty()) continue;
 
-                    log.info("[IceBergBatch][tid={}] <<< batchId={} table={} dataFiles={} deleteFiles={}",
-                            Thread.currentThread().getId(), batchId, tableKeyName,
-                            metrics.dataFilesCount, metrics.deleteFilesCount);
+                        int queueSize = queue.size();
+                        log.info("[IceBergBatch][tid={}] [FullLoad] stream write start key={} queueSize={}",
+                                Thread.currentThread().getId(), key, queueSize);
+
+                        long writeStart = System.currentTimeMillis();
+                        List<DataFile> dataFiles = writeFullLoadStreamFromQueue(iceBergTable, queue, tableKeyName);
+                        long writeEnd = System.currentTimeMillis();
+
+                        for (DataFile df : dataFiles) {
+                            File localFile = new File(df.path().toString());
+                            IcebergFullLoadAsyncCommitter.saveToLocalCache(tableKeyName, df, localFile);
+                        }
+
+                        flushedUntil++;
+                        log.info("[IceBergBatch][tid={}] [FullLoad] stream write done key={} dataFiles={} writeMs={}",
+                                Thread.currentThread().getId(), key, dataFiles.size(), writeEnd - writeStart);
+                    }
+
                 } else {
-                    // 增量模式：保持 while 循环切分，限制单批次大小以防 Iceberg OOM 和 Commit 冲突
+                    // --------------------------------------------------------
+                    // Incremental path:
+                    //   Global sort by binlogOffset guarantees cross-thread CDC order.
+                    //   Then split into batches capped by flushBatchMaxSize to prevent
+                    //   Iceberg OOM and commit conflicts on large incremental loads.
+                    // --------------------------------------------------------
+                    allOps.sort(Comparator.comparingLong(RowOperation::getBinlogOffset));
+
+                    int batchMaxSize = Constant.flushBatchMaxSize;
+                    log.info("[IceBergBatch][tid={}] [Incremental] flush start table={} totalOps={} batchMaxSize={}",
+                            Thread.currentThread().getId(), tableKeyName, allOps.size(), batchMaxSize);
+
                     while (!allOps.isEmpty()) {
                         int batchSize = Math.min(batchMaxSize, allOps.size());
-
                         List<RowOperation> batch = new ArrayList<>(allOps.subList(0, batchSize));
                         String batchId = UUID.randomUUID().toString().substring(0, 8);
 
@@ -840,14 +886,14 @@ public class IceBergBatchOperationHandler {
                 });
 
             } catch (Exception e) {
-                // ★ 改动：allOps 此时剩下的就是未处理部分（含失败批次），直接用，不再需要算偏移
                 int remaining = allOps.size();
                 log.error("[IceBergBatch][tid={}] Flush failed table={} flushedOps={}/{} remaining={}. Error: {}",
                         Thread.currentThread().getId(), tableKeyName, flushedUntil, totalOps, remaining, e.getMessage());
 
+                // Roll back unprocessed incremental ops to the first queue for retry
                 if (!allOps.isEmpty() && !keysToRemove.isEmpty()) {
                     String fallbackKey = keysToRemove.get(0);
-                    java.util.concurrent.LinkedBlockingDeque<RowOperation> fallbackQueue =
+                    LinkedBlockingDeque<RowOperation> fallbackQueue =
                             GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(fallbackKey);
                     if (fallbackQueue != null) {
                         synchronized (fallbackQueue) {
@@ -909,7 +955,7 @@ public class IceBergBatchOperationHandler {
         }
     }
 
-    // ========== 工具方法 ==========
+    // ========== Utility methods ==========
 
     private static List<Integer> resolveEqualityFieldIds(Table iceBergTable, List<String> pkNames) {
         if (pkNames != null && !pkNames.isEmpty()) {
@@ -1028,5 +1074,372 @@ public class IceBergBatchOperationHandler {
             this.insertRecords = insertRecords;
             this.deleteRecords = deleteRecords;
         }
+    }
+
+    // ========== Full-load stream write (core OOM fix) ==========
+
+    /**
+     * Full-load dedicated streaming write.
+     *
+     * Design principle:
+     *   Never create an intermediate List. Poll records directly from the queue,
+     *   write to Parquet, and release the reference immediately.
+     *   For 600-column wide tables a single GenericRecord can be hundreds of KB;
+     *   any form of batch accumulation will blow the heap.
+     *   At any point in time only two things live on the heap:
+     *     1. The Parquet FileAppender RowGroup Buffer (tuned by column count)
+     *     2. The single GenericRecord currently being written (dereferenced after write)
+     *
+     * @param table        Target Iceberg table
+     * @param queue        Source queue for full-load data; consumed to empty by this method
+     * @param tableKeyName Table key used for logging and path construction
+     */
+    public static List<DataFile> writeFullLoadStreamFromQueue(
+            Table table,
+            LinkedBlockingDeque<RowOperation> queue,
+            String tableKeyName) throws Exception {
+
+        if (queue == null || queue.isEmpty()) return Collections.emptyList();
+
+        PartitionSpec spec = table.spec();
+        boolean isPartitioned = spec.isPartitioned();
+        int colCount = table.schema().columns().size();
+
+        // Adaptive Parquet memory tuning based on column count.
+        // The more columns, the wider each row, so the RowGroup Buffer must be smaller
+        // to avoid it alone consuming too much heap.
+        String rowGroupSize;
+        String pageSize;
+        if (colCount > 400) {
+            rowGroupSize = "8388608";   // 8MB — for 600-column tables
+            pageSize     = "131072";    // 128KB
+            log.info("[FullLoadStream][tid={}] Extra-wide table (cols={}), Parquet RowGroup set to 8MB",
+                    Thread.currentThread().getId(), colCount);
+        } else if (colCount > 100) {
+            rowGroupSize = "16777216";  // 16MB
+            pageSize     = "262144";    // 256KB
+            log.info("[FullLoadStream][tid={}] Wide table (cols={}), Parquet RowGroup set to 16MB",
+                    Thread.currentThread().getId(), colCount);
+        } else {
+            rowGroupSize = "67108864";  // 64MB — normal tables
+            pageSize     = "524288";    // 512KB
+        }
+
+        File cacheDir = new File(Constant.basicWorkPath, "FileCache/" + tableKeyName);
+        if (!cacheDir.exists()) cacheDir.mkdirs();
+
+        if (!isPartitioned) {
+            return streamToSingleFile(table, queue, spec, cacheDir, rowGroupSize, pageSize, tableKeyName);
+        }
+        return streamToPartitionedFiles(table, queue, spec, cacheDir, rowGroupSize, pageSize, tableKeyName);
+    }
+
+    /**
+     * Non-partitioned table: single Parquet writer, poll row by row from queue.
+     */
+    /*private static List<DataFile> streamToSingleFile(
+            Table table,
+            LinkedBlockingDeque<RowOperation> queue,
+            PartitionSpec spec,
+            File cacheDir,
+            String rowGroupSize,
+            String pageSize,
+            String tableKeyName) throws Exception {
+
+        File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
+        org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
+
+        FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                .schema(table.schema())
+                .createWriterFunc(GenericParquetWriter::buildWriter)
+                .set("write.parquet.compression-codec", "snappy")
+                .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                .set("write.parquet.page-size-bytes", pageSize)
+                .build();
+
+        int written = 0;
+        try {
+            RowOperation op;
+            // poll rather than drain: after each write the record has no strong reference
+            // and can be reclaimed by GC at the next YGC cycle
+            while ((op = queue.pollFirst()) != null) {
+                GenericRecord rec = op.getNewRecord();
+                if (rec != null) {
+                    appender.add(rec);
+                    written++;
+                }
+            }
+        } finally {
+            appender.close();
+            log.info("[FullLoadStream][tid={}] non-partitioned write done table={} rows={}",
+                    Thread.currentThread().getId(), tableKeyName, written);
+        }
+
+        return Collections.singletonList(
+                DataFiles.builder(spec)
+                        .withInputFile(outputFile.toInputFile())
+                        .withMetrics(appender.metrics())
+                        .withFormat(FileFormat.PARQUET)
+                        .build()
+        );
+    }
+
+    *//**
+     * Partitioned table: maintain one writer per partition key, poll row by row from queue.
+     *//*
+    private static List<DataFile> streamToPartitionedFiles(
+            Table table,
+            LinkedBlockingDeque<RowOperation> queue,
+            PartitionSpec spec,
+            File cacheDir,
+            String rowGroupSize,
+            String pageSize,
+            String tableKeyName) throws Exception {
+
+        Map<PartitionKey, WriterContext> writersMap = new HashMap<>();
+        PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
+        int written = 0;
+
+        try {
+            RowOperation op;
+            while ((op = queue.pollFirst()) != null) {
+                GenericRecord rec = op.getNewRecord();
+                if (rec == null) continue;
+
+                reusablePKey.partition(rec);
+                PartitionKey currentKey = reusablePKey.copy();
+
+                WriterContext ctx = writersMap.get(currentKey);
+                if (ctx == null) {
+                    File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
+                    org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
+                    FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                            .schema(table.schema())
+                            .createWriterFunc(GenericParquetWriter::buildWriter)
+                            .set("write.parquet.compression-codec", "snappy")
+                            .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                            .set("write.parquet.page-size-bytes", pageSize)
+                            .build();
+                    ctx = new WriterContext(localFile, outputFile, appender);
+                    writersMap.put(currentKey, ctx);
+                }
+                ctx.appender.add(rec);
+                written++;
+                // op and rec strong references end here; GC can reclaim them
+            }
+        } finally {
+            log.info("[FullLoadStream][tid={}] partitioned write done table={} rows={} partitions={}",
+                    Thread.currentThread().getId(), tableKeyName, written, writersMap.size());
+        }
+
+        List<DataFile> result = new ArrayList<>();
+        for (Map.Entry<PartitionKey, WriterContext> entry : writersMap.entrySet()) {
+            WriterContext ctx = entry.getValue();
+            try {
+                ctx.appender.close();
+                result.add(DataFiles.builder(spec)
+                        .withInputFile(ctx.outputFile.toInputFile())
+                        .withMetrics(ctx.appender.metrics())
+                        .withFormat(FileFormat.PARQUET)
+                        .withPartition(entry.getKey())
+                        .build());
+            } catch (Exception e) {
+                log.error("[FullLoadStream] Failed to close writer for partition={} table={}",
+                        entry.getKey(), tableKeyName, e);
+            }
+        }
+        writersMap.clear();
+        return result;
+    }
+    *//**
+     * Non-partitioned table: split into multiple small files, one per N rows.
+     * For wide tables the Parquet FileAppender holds one column-writer buffer per column.
+     * 100 columns means 100 concurrent buffers inside the writer — keeping one appender
+     * open for all rows means all those buffers live on the heap simultaneously.
+     * Closing and reopening every rowsPerFile rows bounds the heap to a predictable ceiling.
+     */
+    private static List<DataFile> streamToSingleFile(
+            Table table,
+            LinkedBlockingDeque<RowOperation> queue,
+            PartitionSpec spec,
+            File cacheDir,
+            String rowGroupSize,
+            String pageSize,
+            String tableKeyName) throws Exception {
+
+        int colCount = table.schema().columns().size();
+        // The wider the table, the fewer rows per file.
+        // Each Parquet column writer holds its own encoding buffer;
+        // closing the file flushes and releases all of them at once.
+        int rowsPerFile = resolveRowsPerFile(colCount);
+        log.info("[FullLoadStream][tid={}] non-partitioned table={} cols={} rowsPerFile={}",
+                Thread.currentThread().getId(), tableKeyName, colCount, rowsPerFile);
+
+        List<DataFile> result = new ArrayList<>();
+        int totalWritten = 0;
+        int fileIndex = 0;
+
+        while (!queue.isEmpty()) {
+            File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
+            org.apache.iceberg.io.OutputFile outputFile =
+                    org.apache.iceberg.Files.localOutput(localFile);
+
+            FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                    .schema(table.schema())
+                    .createWriterFunc(GenericParquetWriter::buildWriter)
+                    .set("write.parquet.compression-codec", "snappy")
+                    .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                    .set("write.parquet.page-size-bytes", pageSize)
+                    .build();
+
+            int writtenThisFile = 0;
+            try {
+                RowOperation op;
+                while (writtenThisFile < rowsPerFile && (op = queue.pollFirst()) != null) {
+                    GenericRecord rec = op.getNewRecord();
+                    if (rec != null) {
+                        appender.add(rec);
+                        writtenThisFile++;
+                        totalWritten++;
+                    }
+                    // op and rec dereferenced here; eligible for GC immediately
+                }
+            } finally {
+                // Closing the appender flushes the final RowGroup and releases
+                // ALL column-writer buffers — this is the key memory release point
+                appender.close();
+            }
+
+            if (writtenThisFile > 0) {
+                result.add(DataFiles.builder(spec)
+                        .withInputFile(outputFile.toInputFile())
+                        .withMetrics(appender.metrics())
+                        .withFormat(FileFormat.PARQUET)
+                        .build());
+                fileIndex++;
+                log.info("[FullLoadStream][tid={}] file#{} closed table={} rowsThisFile={} totalWritten={}",
+                        Thread.currentThread().getId(), fileIndex, tableKeyName,
+                        writtenThisFile, totalWritten);
+            }
+        }
+
+        log.info("[FullLoadStream][tid={}] non-partitioned write done table={} totalRows={} files={}",
+                Thread.currentThread().getId(), tableKeyName, totalWritten, result.size());
+        return result;
+    }
+
+    /**
+     * Partitioned table: same row-count cap per file, per partition.
+     */
+    private static List<DataFile> streamToPartitionedFiles(
+            Table table,
+            LinkedBlockingDeque<RowOperation> queue,
+            PartitionSpec spec,
+            File cacheDir,
+            String rowGroupSize,
+            String pageSize,
+            String tableKeyName) throws Exception {
+
+        int colCount = table.schema().columns().size();
+        int rowsPerFile = resolveRowsPerFile(colCount);
+        log.info("[FullLoadStream][tid={}] partitioned table={} cols={} rowsPerFile={}",
+                Thread.currentThread().getId(), tableKeyName, colCount, rowsPerFile);
+
+        List<DataFile> result = new ArrayList<>();
+        PartitionKey reusablePKey = new PartitionKey(spec, table.schema());
+
+        // Current open writers per partition
+        Map<PartitionKey, WriterContext> writersMap = new HashMap<>();
+        // Row count per partition writer
+        Map<PartitionKey, Integer> writerRowCount = new HashMap<>();
+
+        int totalWritten = 0;
+
+        try {
+            RowOperation op;
+            while ((op = queue.pollFirst()) != null) {
+                GenericRecord rec = op.getNewRecord();
+                if (rec == null) continue;
+
+                reusablePKey.partition(rec);
+                PartitionKey currentKey = reusablePKey.copy();
+
+                // Check if current writer for this partition has hit the row cap
+                Integer rowCount = writerRowCount.getOrDefault(currentKey, 0);
+                if (rowCount >= rowsPerFile) {
+                    // Close this partition's writer, collect the DataFile, open a new one
+                    WriterContext oldCtx = writersMap.remove(currentKey);
+                    writerRowCount.remove(currentKey);
+                    if (oldCtx != null) {
+                        oldCtx.appender.close();
+                        result.add(DataFiles.builder(spec)
+                                .withInputFile(oldCtx.outputFile.toInputFile())
+                                .withMetrics(oldCtx.appender.metrics())
+                                .withFormat(FileFormat.PARQUET)
+                                .withPartition(currentKey)
+                                .build());
+                        log.info("[FullLoadStream][tid={}] partition file rolled table={} partition={} rows={}",
+                                Thread.currentThread().getId(), tableKeyName, currentKey, rowCount);
+                    }
+                }
+
+                // Get or create writer for this partition
+                WriterContext ctx = writersMap.get(currentKey);
+                if (ctx == null) {
+                    File localFile = new File(cacheDir, UUID.randomUUID() + ".parquet");
+                    org.apache.iceberg.io.OutputFile outputFile =
+                            org.apache.iceberg.Files.localOutput(localFile);
+                    FileAppender<GenericRecord> appender = Parquet.write(outputFile)
+                            .schema(table.schema())
+                            .createWriterFunc(GenericParquetWriter::buildWriter)
+                            .set("write.parquet.compression-codec", "snappy")
+                            .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                            .set("write.parquet.page-size-bytes", pageSize)
+                            .build();
+                    ctx = new WriterContext(localFile, outputFile, appender);
+                    writersMap.put(currentKey, ctx);
+                    writerRowCount.put(currentKey, 0);
+                }
+
+                ctx.appender.add(rec);
+                writerRowCount.put(currentKey, writerRowCount.get(currentKey) + 1);
+                totalWritten++;
+            }
+        } finally {
+            // Close all remaining open writers
+            for (Map.Entry<PartitionKey, WriterContext> entry : writersMap.entrySet()) {
+                PartitionKey pKey = entry.getKey();
+                WriterContext ctx = entry.getValue();
+                try {
+                    ctx.appender.close();
+                    result.add(DataFiles.builder(spec)
+                            .withInputFile(ctx.outputFile.toInputFile())
+                            .withMetrics(ctx.appender.metrics())
+                            .withFormat(FileFormat.PARQUET)
+                            .withPartition(pKey)
+                            .build());
+                } catch (Exception e) {
+                    log.error("[FullLoadStream] Failed to close writer partition={} table={}",
+                            pKey, tableKeyName, e);
+                }
+            }
+            writersMap.clear();
+            writerRowCount.clear();
+            log.info("[FullLoadStream][tid={}] partitioned write done table={} totalRows={} files={}",
+                    Thread.currentThread().getId(), tableKeyName, totalWritten, result.size());
+        }
+        return result;
+    }
+
+    /**
+     * Determine how many rows to write per Parquet file based on column count.
+     * Wider tables need smaller files because each column writer holds its own
+     * encoding buffer inside the Parquet FileAppender. More columns = more
+     * concurrent buffers on the heap. Closing the file releases all of them.
+     */
+    private static int resolveRowsPerFile(int colCount) {
+        if (colCount > 400) return 500;   // 600-col table: close file every 500 rows
+        if (colCount > 100) return 2000;  // 100-col table: close file every 2000 rows
+        return 10000;                     // normal table: close file every 10000 rows
     }
 }

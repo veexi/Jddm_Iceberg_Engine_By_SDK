@@ -565,7 +565,7 @@ private static boolean initializeServices() throws InitializationException {
             long usedMemory  = totalMemory - freeMemory;
             double usageRatio = (double) usedMemory / maxMemory;
 
-            if (usageRatio < 0.80) {
+            if (usageRatio < 0.50) {
                 break;
             }
 

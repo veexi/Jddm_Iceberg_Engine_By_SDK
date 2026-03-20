@@ -259,21 +259,34 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
         FileSystem fs = fsCache.get(tableKey);
         if (fs != null) return fs;
 
-        // 直接从 table.io() 取已经正确初始化过的 Configuration
-        // 这个 conf 是 Iceberg 引擎启动时就配好的，hdfs-site.xml/HA 全在里面
         Configuration conf;
         if (table.io() instanceof org.apache.iceberg.hadoop.HadoopFileIO) {
             conf = ((org.apache.iceberg.hadoop.HadoopFileIO) table.io()).conf();
             log.info("[AsyncCommitter] Reusing HadoopFileIO conf for table={}", tableKey);
         } else {
-            // 兜底：走原来的工具类（kerberos 开启场景）
             conf = KerberosAuthUtil.buildHadoopConf();
             log.info("[AsyncCommitter] Fallback to KerberosAuthUtil conf for table={}", tableKey);
         }
 
+        // Reduce replication factor to 1 for full-load uploads.
+        // Default is 3, meaning all 3 DataNodes must ACK each block sequentially.
+        // If any DataNode has a GC pause, the entire pipeline stalls for 60+ seconds.
+        // Replication=1 means only 1 DataNode needs to ACK — other nodes' GC is irrelevant.
+        // Iceberg snapshot integrity is not affected by replication factor.
+        conf.set("dfs.replication", "1");
+
+        // Increase socket timeout to avoid spurious failures during DataNode GC pauses.
+        // Default is 60000ms; setting to 120000ms gives more headroom before hard failure.
+        conf.set("dfs.client.socket-timeout", "120000");
+
+        // If a DataNode is truly unavailable, allow the client to exclude it and
+        // find another node rather than failing the entire write.
+        conf.set("dfs.client.block.write.replace-datanode-on-failure.enable", "true");
+        conf.set("dfs.client.block.write.replace-datanode-on-failure.policy", "NEVER");
+
         fs = FileSystem.get(new Path(table.location()).toUri(), conf);
         fsCache.put(tableKey, fs);
-        log.info("[AsyncCommitter] FileSystem initialized and cached for table={}", tableKey);
+        log.info("[AsyncCommitter] FileSystem initialized for table={} replication=1", tableKey);
         return fs;
     }
     public static void saveToLocalCache(String tableKey, DataFile dataFile, File localParquetFile) throws Exception {
