@@ -494,7 +494,6 @@ public class IceBergTableOperationByEngine {
             case 1:   // varchar2
             case 9:   // varchar
             case 8:   // long（Oracle 字符类型，非数值 long）
-            case 96:  // char
             case 112: // clob / nclob
                 // ===== 不在映射表，降级 string =====
             case 5007: // 内部自定义类型
@@ -514,16 +513,94 @@ public class IceBergTableOperationByEngine {
             case 23:   // RAW
             case 113:  // BLOB
                 return Types.StringType.get();
+             case 96:  // char
+                 if (columnVo.getSourceType() != null && columnVo.getSourceType().length > 0) {
+                     int sourceTypeInt = ConversionUtil.getIntFromBytes(columnVo.getSourceType());
+                     if (sourceTypeInt >= 5000 && sourceTypeInt < 6000) {
+                         if (sourceTypeInt == 5018) {
+                             log.info("[DDL] col={} sourceType={} → Boolean",
+                                     columnVo.getColumnName(), sourceTypeInt);
+                             return Types.BooleanType.get();
+                         } else {
+                             // 2021(datetime) 及其他 2000 系列全部映射 timestamp
+                             log.info("[DDL] col={} sourceType={} → StringType",
+                                     columnVo.getColumnName(), sourceTypeInt);
+                             return Types.StringType.get();
 
-            // ===== 客户映射表：timestamp ← date / timestamp =====
+                         }
+                     }
+                 }
+                 return Types.StringType.get();
+
+                 // ===== 客户映射表：timestamp ← date / timestamp =====
             case 12:   // Oracle DATE（含时分秒）
-                // colPrecision == 4 表示该字段仅存储年月日，无时分秒部分
-/*                if (Integer.parseInt(columnVo.getColPrecision()) == 4) {
-                    return Types.DateType.get();
-                }*/
-                // 否则 Oracle DATE 实际含时分秒，映射为不带时区的 timestamp
-                return Types.TimestampType.withoutZone();
+                 // 优先用 sourceType 区分 MySQL date(2020) 和 datetime(2021)
+                 // sourceType 是 byte[]，需判空后转 int
+                 // 2000 系列是 MySQL 专属类型，其他来源不走此分支
+                 if (columnVo.getSourceType() != null && columnVo.getSourceType().length > 0) {
+                     int sourceTypeInt = ConversionUtil.getIntFromBytes(columnVo.getSourceType());
+                     if (sourceTypeInt >= 2000 && sourceTypeInt < 3000) {
+                         if (sourceTypeInt == 2020) {
+                             log.info("[DDL] col={} sourceType={} → DateType",
+                                     columnVo.getColumnName(), sourceTypeInt);
+                             return Types.DateType.get();
+                         } else {
+                             // 2021(datetime) 及其他 2000 系列全部映射 timestamp
+                             log.info("[DDL] col={} sourceType={} → TimestampType",
+                                     columnVo.getColumnName(), sourceTypeInt);
+                             return Types.TimestampType.withoutZone();
+                         }
+                     }else if (sourceTypeInt >= 5000 && sourceTypeInt < 6000){
+                         if (sourceTypeInt == 5014) {
+                             log.info("[DDL] col={} sourceType={} → DateType",
+                                     columnVo.getColumnName(), sourceTypeInt);
+                             return Types.DateType.get();
+                         } else {
+                             // 2021(datetime) 及其他 2000 系列全部映射 timestamp
+                             log.info("[DDL] col={} sourceType={} → TimestampType",
+                                     columnVo.getColumnName(), sourceTypeInt);
+                             return Types.TimestampType.withoutZone();
+                         }
+                     }
+                 }
+                 // sourceType 为空或非 MySQL 类型（Oracle 等），一律 timestamp，安全兜底
+                 return Types.TimestampType.withoutZone();
             case 180:  // TIMESTAMP
+                // 优先用 sourceType 区分 MySQL date(2020) 和 datetime(2021)
+                // sourceType 是 byte[]，需判空后转 int
+                // 2000 系列是 MySQL 专属类型，其他来源不走此分支
+                if (columnVo.getSourceType() != null && columnVo.getSourceType().length > 0) {
+                    int sourceTypeInt = ConversionUtil.getIntFromBytes(columnVo.getSourceType());
+                    if (sourceTypeInt >= 2000 && sourceTypeInt < 3000) {
+                        if (sourceTypeInt == 2019) {
+                            log.info("[DDL] col={} sourceType={} → TimeType",
+                                    columnVo.getColumnName(), sourceTypeInt);
+                            return Types.TimeType.get();
+                        } else {
+                            // 2021(datetime) 及其他 2000 系列全部映射 timestamp
+                            log.info("[DDL] col={} sourceType={} → TimestampType",
+                                    columnVo.getColumnName(), sourceTypeInt);
+                            return Types.TimestampType.withoutZone();
+                        }
+                    }else if (sourceTypeInt >= 5000 && sourceTypeInt < 6000){
+                        if (sourceTypeInt == 5010) {
+                            log.info("[DDL] col={} sourceType={} → TimeType",
+                                    columnVo.getColumnName(), sourceTypeInt);
+                            return Types.TimeType.get();
+                        } else if (sourceTypeInt == 5011){
+                            // 2021(datetime) 及其他 2000 系列全部映射 timestamp
+                            log.info("[DDL] col={} sourceType={} → StringType",
+                                    columnVo.getColumnName(), sourceTypeInt);
+                            return Types.StringType.get();
+                        }else {
+                            // 2021(datetime) 及其他 2000 系列全部映射 timestamp
+                            log.info("[DDL] col={} sourceType={} → TimestampType",
+                                    columnVo.getColumnName(), sourceTypeInt);
+                            return Types.TimestampType.withoutZone();
+                        }
+                    }
+
+                }
                 // 长度为 1 时，源端实际是 TIME 类型，按 Iceberg TimeType 建表
                 return Types.TimestampType.withoutZone();
 
@@ -533,7 +610,7 @@ public class IceBergTableOperationByEngine {
                 return Types.TimestampType.withZone();
 
             case 100:  // BINARY_FLOAT → FloatType，与 Oracle 原始类型语义完全对应
-                return Types.FloatType.get();
+                return Types.DoubleType.get();
 
             case 101:  // BINARY_DOUBLE → DoubleType，与 Oracle 原始类型语义完全对应
                 return Types.DoubleType.get();
@@ -570,14 +647,13 @@ public class IceBergTableOperationByEngine {
         switch (numberType) {
 
             case 1000: { // NUMBER（无任何精度标注）→ long（客户要求）
-                return Types.LongType.get();
+                return Types.DecimalType.of(38, 0); // NUMBER(19+,0) → decimal
             }
 
             case 1100: { // NUMBER(n,0) — 用户确认所有 number(n,0) 都走这里
-                int len = safeParseInt(columnVo.getColumnLen(), 18);
-                if (len == 1)        return Types.BooleanType.get();              // NUMBER(1,0) → boolean
-                else if (len <= 18)  return Types.LongType.get();                // NUMBER(2~18,0) → long
-                else                 return Types.DecimalType.of(Math.min(len, 38), 0); // NUMBER(19+,0) → decimal
+                int p = safeParseInt(columnVo.getColumnLen(), 18);
+
+                return Types.DecimalType.of(Math.min(p, 38), 0); // NUMBER(19+,0) → decimal
             }
 
             case 1200: { // NUMBER(%d)（只有精度无标度）
@@ -674,17 +750,21 @@ public class IceBergTableOperationByEngine {
             };
 
         } else if (fieldType instanceof org.apache.iceberg.types.Types.TimeType) {
-        return (String v) -> {
-            String t = v.trim();
-            int spaceIdx = t.indexOf(' ');
-            if (spaceIdx >= 0) t = t.substring(spaceIdx + 1);
-            try { return java.time.LocalTime.parse(t, java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS")); } catch (Exception ignored) {}
-            try { return java.time.LocalTime.parse(t, java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")); } catch (Exception ignored) {}
-            try { return java.time.LocalTime.parse(t); } catch (Exception ignored) {}
-            return null;
-        };
-
-    } else if (fieldType instanceof org.apache.iceberg.types.Types.TimestampType) {
+            return (String v) -> {
+                String t = v.trim();
+                try { return java.time.LocalDateTime.parse(t, FMT_DATETIME_MS).toLocalTime(); } catch (Exception ignored) {}
+                try { return java.time.LocalDateTime.parse(t, FMT_DATETIME_US).toLocalTime(); } catch (Exception ignored) {}
+                try { return java.time.LocalDateTime.parse(t, FMT_DATETIME).toLocalTime(); } catch (Exception ignored) {}
+                if (t.contains(" +") || t.contains(" -")) {
+                    int tzIdx = t.lastIndexOf(' ');
+                    if (tzIdx > 0) t = t.substring(0, tzIdx);
+                }
+                try { return java.time.LocalTime.parse(t, java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSSSSS")); } catch (Exception ignored) {}
+                try { return java.time.LocalTime.parse(t, java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")); } catch (Exception ignored) {}
+                try { return java.time.LocalTime.parse(t); } catch (Exception ignored) {}
+                return null;
+            };
+        } else if (fieldType instanceof org.apache.iceberg.types.Types.TimestampType) {
         boolean withZone = ((org.apache.iceberg.types.Types.TimestampType) fieldType).shouldAdjustToUTC();
         // 跨类调用，parseTimestampValue 改为 static 后可以直接引用
         return (String v) -> OperationTotalSyncByIceBergThreadPool.parseTimestampValue(v.trim(), withZone);

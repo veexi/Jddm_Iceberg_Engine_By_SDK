@@ -48,9 +48,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
     };
     // 无时区
     private static final java.time.format.DateTimeFormatter FMT_DATETIME_NS   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSSSSS");
-    private static final java.time.format.DateTimeFormatter FMT_DATETIME_US   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
-    private static final java.time.format.DateTimeFormatter FMT_DATETIME_MS   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
-    private static final java.time.format.DateTimeFormatter FMT_DATETIME      = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    public static final java.time.format.DateTimeFormatter FMT_DATETIME_US   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+    public static final java.time.format.DateTimeFormatter FMT_DATETIME_MS   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
+    public static final java.time.format.DateTimeFormatter FMT_DATETIME      = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final java.time.format.DateTimeFormatter FMT_DATETIME_HM   = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     public static final java.time.format.DateTimeFormatter FMT_DATE          = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd");
     public static final java.time.format.DateTimeFormatter FMT_DATE_SLASH    = java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd");
@@ -762,6 +762,24 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 return null;
             } else if (fieldType instanceof org.apache.iceberg.types.Types.TimeType) {
                 String trimmed = rawValue.trim();
+                // 处理带日期前缀的情况，如 "1970-01-01 10:20:30.123"
+                try {
+                    return java.time.LocalDateTime.parse(trimmed, FMT_DATETIME_MS).toLocalTime();
+                } catch (Exception ignored) {
+                }
+                try {
+                    return java.time.LocalDateTime.parse(trimmed, FMT_DATETIME_US).toLocalTime();
+                } catch (Exception ignored) {
+                }
+                try {
+                    return java.time.LocalDateTime.parse(trimmed, FMT_DATETIME).toLocalTime();
+                } catch (Exception ignored) {
+                }
+                // 处理带时区的纯时间，如 "10:20:30.123000 +08:00"，截掉时区部分只取时间
+                if (trimmed.length() > 15 && trimmed.contains(" +") || trimmed.contains(" -")) {
+                    int tzIdx = trimmed.lastIndexOf(' ');
+                    if (tzIdx > 0) trimmed = trimmed.substring(0, tzIdx);
+                }
                 try {
                     return java.time.LocalTime.parse(trimmed, TIME_FMT_MICROSECOND);
                 } catch (Exception ignored) {
@@ -1098,4 +1116,4 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     Thread.currentThread().getId(), threadKey, e.getMessage(), e);
         }
     }
-}
+}

@@ -209,7 +209,8 @@ public class StartIcebergEngine {
                                     try {
                                         sqLiteJDBC.recordJddmCacheTable_ToSqliteDB(cachekeyName,((TableInfoVo) item).getObjn()+"",content,tableCacheInfo.serializableTableVo_ToByteArray((TableInfoVo) item));
                                     } catch (Exception e) {
-                                        log.error("Jddm Engine Plug-in Table DDL Write To Sqlite Exception !");
+                                        log.error("Jddm Engine Plug-in Table DDL Write To Sqlite Exception ! table={} objn={} err={}",
+                                        cachekeyName, ((TableInfoVo) item).getObjn(), e.getMessage(), e);
                                     }
 
                                 }
