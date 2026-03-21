@@ -101,6 +101,18 @@ public class JddmEngineKillHandler implements SignalHandler{
                 }
                 log.info("[Shutdown] FileSystem cache closed, " + count + " instances released");
             }));
+            if (!GlobalSetConfInfo.fullLoadDirectWriterMap.isEmpty()) {
+                System.out.println(" [StopJddmEngine] Flushing " + GlobalSetConfInfo.fullLoadDirectWriterMap.size() + " direct writers...");
+                for (String threadKey : GlobalSetConfInfo.fullLoadDirectWriterMap.keySet()) {
+                    try {
+                        String tableKey = threadKey.substring(0, threadKey.lastIndexOf('.'));
+                        com.jddm.thread.OperationTotalSyncByIceBergThreadPool.rollAndSaveDirectWriter(threadKey, tableKey);
+                    } catch (Exception e) {
+                        log.error("[StopJddmEngine] flush direct writer failed key=" + threadKey + " err=" + e.getMessage());
+                    }
+                }
+            }
+
             if (!GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.isEmpty()
                     || !GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
 

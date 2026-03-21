@@ -746,6 +746,9 @@ public class IceBergBatchOperationHandler {
                         k -> new java.util.concurrent.locks.ReentrantLock());
         tableLock.lock();
         try {
+            // ★ 改动：在冲刷增量队列前，先检查并关闭本表所有的全量直写 Appender
+            flushDirectWriters(tableKeyName);
+
             List<String> sortedKeys = GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.keySet().stream()
                     .filter(k -> k.startsWith(tableKeyName + "."))
                     .sorted()
@@ -1437,9 +1440,49 @@ public class IceBergBatchOperationHandler {
      * encoding buffer inside the Parquet FileAppender. More columns = more
      * concurrent buffers on the heap. Closing the file releases all of them.
      */
+    /**
+     * 遍历 GlobalSetConfInfo.fullLoadDirectWriterMap，寻找属于本表的所有 threadId 对应的 writer。
+     * 调用 rollAndSaveDirectWriter 关闭文件并提交。
+     */
+    public static void flushDirectWriters(String tableKeyName) {
+        String prefix = tableKeyName + ".";
+        List<String> threadKeysToFlush = new java.util.ArrayList<>();
+
+        // 1. 识别属于当前表的所有活跃 writer key
+        for (String threadKey : GlobalSetConfInfo.fullLoadDirectWriterMap.keySet()) {
+            if (threadKey.startsWith(prefix)) {
+                threadKeysToFlush.add(threadKey);
+            }
+        }
+
+        if (threadKeysToFlush.isEmpty()) return;
+
+        log.info("[IceBergBatch][tid={}] flushing {} direct writers for table={}",
+                Thread.currentThread().getId(), threadKeysToFlush.size(), tableKeyName);
+
+        // 2. 借用 ThreadPool 类里的 roll 方法执行关闭逻辑
+        for (String threadKey : threadKeysToFlush) {
+            try {
+                // 如果 owner 线程正在写入，本次跳过，等下一个定时器周期再处理，避免并发关闭 appender
+                GlobalSetConfInfo.FullLoadDirectWriter writer =
+                        GlobalSetConfInfo.fullLoadDirectWriterMap.get(threadKey);
+                if (writer != null && writer.activelyWriting) {
+                    log.info("[DirectWrite] flushDirectWriters skip active writer key={}", threadKey);
+                    continue;
+                }
+
+                com.jddm.thread.OperationTotalSyncByIceBergThreadPool.rollAndSaveDirectWriter(
+                        threadKey, tableKeyName);
+            } catch (Exception e) {
+                log.error("[IceBergBatch][tid={}] flush direct writer failed key={} err={}",
+                        Thread.currentThread().getId(), threadKey, e.getMessage());
+            }
+        }
+    }
+
     private static int resolveRowsPerFile(int colCount) {
         if (colCount > 400) return 500;   // 600-col table: close file every 500 rows
         if (colCount > 100) return 2000;  // 100-col table: close file every 2000 rows
         return 10000;                     // normal table: close file every 10000 rows
     }
-}
+}

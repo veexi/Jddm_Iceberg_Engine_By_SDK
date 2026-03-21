@@ -112,12 +112,35 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     continue;
                 }
 
-                initCacheIfAbsent(schemaKeyByParquet, schemaKeyByParquetThreadID);
-
-                // ★ 改动：保留原始 rawOpType，全量 "i" 在 toUpperCase 前判断，否则转完就无法区分
+                // 先判断全量/增量，rawOpType 必须在 toUpperCase 之前判断
                 String rawOpType = packageReturnVo.getOperationType();
-                boolean isFullLoad = "i".equals(rawOpType); // 小写 i = 全量
+                boolean isFullLoad = "i".equals(rawOpType);
                 String opType = rawOpType.toUpperCase();
+
+                // ====================================================================
+                // 全量直写路径：解析一行立刻写入本地 Parquet，写完丢弃引用，GC 随时回收。
+                // 堆中同一时刻只有：当前行的 GenericRecord + Parquet RowGroup buffer。
+                // 彻底消灭"解析快→队列积压→内存爆炸"的根因。
+                // 增量路径（大写 I/U/D）完全不受影响。
+                // ====================================================================
+                if (isFullLoad) {
+                    log.info("[IceBergPool][tid={}] pktSeq={} table={} [DirectWrite] rows={}",
+                            Thread.currentThread().getId(), pktSeq, schemaKeyByParquet, rowsNum);
+                    try {
+                        writeFullLoadDirect(rowsNum, columnsNum, rowUdbColumnMap,
+                                schemaKeyByParquet, schemaKeyByParquetThreadID, pktSeq);
+                    } finally {
+                        rowUdbColumnMap = null;
+                        packageReturnVo = null;
+                        seqPackage      = null;
+                    }
+                    continue;
+                }
+
+                // ====================================================================
+                // 增量路径：原有逻辑完全不变
+                // ====================================================================
+                initCacheIfAbsent(schemaKeyByParquet, schemaKeyByParquetThreadID);
 
                 List<RowOperation> opsBuffer = buildRowOperations(
                         opType, isFullLoad, rowsNum, columnsNum, rowUdbColumnMap,
@@ -126,12 +149,15 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 rowUdbColumnMap = null;
                 packageReturnVo = null;
                 seqPackage = null;
-                log.info("[IceBergPool][tid={}] pktSeq={} table={} op={} fullLoad={} parsedOps={}", Thread.currentThread().getId(), pktSeq, schemaKeyByParquet, opType, isFullLoad, opsBuffer.size());
+                log.info("[IceBergPool][tid={}] pktSeq={} table={} op={} fullLoad={} parsedOps={}",
+                        Thread.currentThread().getId(), pktSeq, schemaKeyByParquet, opType, isFullLoad, opsBuffer.size());
                 if (Constant.debugLogEnabled) {
-                    log.info("[IceBergPool][tid={}] pktSeq={} opDetails={}", Thread.currentThread().getId(), pktSeq, summarizeOps(opsBuffer, schemaKeyByParquet, 10));
+                    log.info("[IceBergPool][tid={}] pktSeq={} opDetails={}",
+                            Thread.currentThread().getId(), pktSeq, summarizeOps(opsBuffer, schemaKeyByParquet, 10));
                 }
 
-                java.util.concurrent.LinkedBlockingDeque<RowOperation> queue = GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(schemaKeyByParquetThreadID);
+                java.util.concurrent.LinkedBlockingDeque<RowOperation> queue =
+                        GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(schemaKeyByParquetThreadID);
                 synchronized (queue) {
                     queue.addAll(opsBuffer);
                 }
@@ -144,10 +170,12 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         .addAndGet(rowsNum);
 
                 if (currentCount >= Constant.writeCountNoToHiveFile) {
-                    log.info("[IcebergPool][tid={}] count rows ::  {}>={}", Thread.currentThread().getId(), currentCount, Constant.writeCountNoToHiveFile);
+                    log.info("[IcebergPool][tid={}] count rows ::  {}>={}",
+                            Thread.currentThread().getId(), currentCount, Constant.writeCountNoToHiveFile);
                     triggerFlush(schemaKeyByParquet, schemaKeyByParquetThreadID, packageReturnVo, currentCount);
                 } else {
-                    log.info("[IcebergPool][tid={}] count rows ::  {}<{}", Thread.currentThread().getId(), currentCount, Constant.writeCountNoToHiveFile);
+                    log.info("[IcebergPool][tid={}] count rows ::  {}<{}",
+                            Thread.currentThread().getId(), currentCount, Constant.writeCountNoToHiveFile);
                 }
 
             } catch (Exception ex) {
@@ -867,4 +895,207 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         return null;
     }
 
-}
+    // =========================================================================
+    // 全量直写核心方法组
+    // =========================================================================
+
+    /**
+     * 全量直写核心：逐行解析、逐行写盘，GenericRecord 写完后立刻脱离引用可被 GC 回收。
+     * 与原 buildRowOperations 快速路径共用同一套预计算缓存（converters / colPosMap），性能无损耗。
+     * 内存模型完全不同：不再有 List<RowOperation> 的批量积压。
+     */
+    private void writeFullLoadDirect(int rowsNum,
+                                     int columnsNum,
+                                     Map<String, com.dsg.analysis.vo.Udb_BcolumnVo> rowUdbColumnMap,
+                                     String schemaKeyByParquet,
+                                     String schemaKeyByParquetThreadID,
+                                     long pktSeq) throws Exception {
+
+        org.apache.iceberg.Table iceBergTable =
+                GlobalSetConfInfo.IceBergCacheTableMap.get(schemaKeyByParquet);
+        if (iceBergTable == null) {
+            log.warn("[DirectWrite][tid={}] table not cached, skip. table={}",
+                    Thread.currentThread().getId(), schemaKeyByParquet);
+            return;
+        }
+
+        org.apache.iceberg.Schema schema =
+                GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet);
+
+        // 取预计算缓存，使用快速路径
+        java.util.function.Function<String, Object>[] converters =
+                GlobalSetConfInfo.tableColumnConvertersCache.get(schemaKeyByParquet);
+        Map<String, Integer> colPosMap =
+                GlobalSetConfInfo.tableColumnPosCache.get(schemaKeyByParquet);
+
+        // 获取（或创建）本线程专属的 FileAppender
+        GlobalSetConfInfo.FullLoadDirectWriter writer =
+                getOrCreateDirectWriter(schemaKeyByParquetThreadID, schemaKeyByParquet, iceBergTable);
+
+        StringBuilder mapKeyBuilder = new StringBuilder(16);
+
+        // 标记当前线程正在写入，防止定时器线程并发关闭此 appender
+        writer.activelyWriting = true;
+        try {
+            for (int rowNo = 0; rowNo < rowsNum; rowNo++) {
+
+            // 每次循环只创建一个 GenericRecord，下次循环时前一个自动脱离引用等待 GC
+            GenericRecord record = GenericRecord.create(schema);
+
+            for (int colNo = 0; colNo < columnsNum; colNo++) {
+                mapKeyBuilder.setLength(0);
+                mapKeyBuilder.append(rowNo).append('-').append(colNo);
+                com.dsg.analysis.vo.Udb_BcolumnVo columnInfo =
+                        rowUdbColumnMap.get(mapKeyBuilder.toString());
+                if (columnInfo == null) continue;
+
+                // 跳过 Merger 控制列
+                if (columnInfo.getColumnName().equals(com.publics.common.ConstantPubSet.MergerColKeyName))
+                    continue;
+
+                String rawVal = columnInfo.getColumnValue();
+                if (rawVal == null || rawVal.isEmpty()) continue;
+
+                String colNameLower = columnInfo.getColumnName().toLowerCase();
+
+                // 快速路径：预绑定 lambda，无 instanceof 判断
+                if (converters != null && colPosMap != null) {
+                    Integer colPos = colPosMap.get(colNameLower);
+                    if (colPos == null) continue;
+                    try {
+                        Object val = converters[colPos].apply(rawVal);
+                        if (val != null) record.set(colPos, val);
+                    } catch (Exception e) {
+                        if (Constant.debugLogEnabled) {
+                            log.warn("[DirectWrite][tid={}] convert failed col={} val={} err={}",
+                                    Thread.currentThread().getId(), colNameLower, rawVal, e.getMessage());
+                        }
+                    }
+                } else {
+                    // 降级路径：预计算缓存未命中时回退到 columnTypeCache
+                    org.apache.iceberg.types.Type fieldType =
+                            GlobalSetConfInfo.columnTypeCache.get(schemaKeyByParquet + "." + colNameLower);
+                    if (fieldType != null) {
+                        Object val = convertValue(rawVal, fieldType, colNameLower);
+                        if (val != null) record.setField(colNameLower, val);
+                    }
+                }
+            }
+
+            // 写入 FileAppender，写完后 record 在下次循环赋值时自动脱离强引用，GC 随时回收
+            writer.appender.add(record);
+            writer.rowCount++;
+        }
+        } finally {
+            // 无论正常完成还是异常，都清除写入标志，让定时器可以安全关闭
+            writer.activelyWriting = false;
+        }
+
+        // 更新时间戳，让定时器知道该 key 仍有活跃写入
+        GlobalConfInfo.lastDataWriteTimerByParquetMap.put(
+                schemaKeyByParquetThreadID, System.currentTimeMillis());
+
+        log.info("[DirectWrite][tid={}] pktSeq={} wroteRows={} totalRows={} table={}",
+                Thread.currentThread().getId(), pktSeq, rowsNum, writer.rowCount, schemaKeyByParquet);
+
+        // 根据列宽动态决定切割阈值：列越多单行越宽，越早关闭文件释放 RowGroup buffer
+        int colCount = iceBergTable.schema().columns().size();
+        int rowsPerFile = colCount > 300 ? 10_000 : (colCount > 100 ? 30_000 : 80_000);
+        if (writer.rowCount >= rowsPerFile) {
+            rollAndSaveDirectWriter(schemaKeyByParquetThreadID, schemaKeyByParquet);
+        }
+    }
+
+    /**
+     * 获取或创建本线程专属的 FileAppender。
+     * key = "schema.table.threadId"，线程间天然隔离，无需加锁。
+     */
+    private GlobalSetConfInfo.FullLoadDirectWriter getOrCreateDirectWriter(
+            String threadKey,
+            String tableKey,
+            org.apache.iceberg.Table table) throws Exception {
+
+        GlobalSetConfInfo.FullLoadDirectWriter existing =
+                GlobalSetConfInfo.fullLoadDirectWriterMap.get(threadKey);
+        if (existing != null) return existing;
+
+        // 列越宽，RowGroup buffer 越小，防止 FileAppender 内部占用过多堆内存
+        int colCount = table.schema().columns().size();
+        String rowGroupSize = colCount > 300 ? "8388608"  :   // 8MB
+                              colCount > 100 ? "16777216" :   // 16MB
+                                              "67108864";     // 64MB
+        String pageSize     = colCount > 300 ? "131072"   :   // 128KB
+                              colCount > 100 ? "262144"   :   // 256KB
+                                              "524288";       // 512KB
+
+        java.io.File cacheDir = new java.io.File(Constant.basicWorkPath, "FileCache/" + tableKey);
+        if (!cacheDir.exists()) cacheDir.mkdirs();
+
+        java.io.File localFile = new java.io.File(cacheDir, java.util.UUID.randomUUID() + ".parquet");
+        org.apache.iceberg.io.OutputFile outputFile = org.apache.iceberg.Files.localOutput(localFile);
+
+        org.apache.iceberg.io.FileAppender<GenericRecord> appender =
+                org.apache.iceberg.parquet.Parquet.write(outputFile)
+                        .schema(table.schema())
+                        .createWriterFunc(
+                                org.apache.iceberg.data.parquet.GenericParquetWriter::buildWriter)
+                        .set("write.parquet.compression-codec", "snappy")
+                        .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                        .set("write.parquet.page-size-bytes", pageSize)
+                        .build();
+
+        GlobalSetConfInfo.FullLoadDirectWriter writer =
+                new GlobalSetConfInfo.FullLoadDirectWriter(tableKey, localFile, outputFile, appender);
+        GlobalSetConfInfo.fullLoadDirectWriterMap.put(threadKey, writer);
+
+        log.info("[DirectWrite][tid={}] opened appender key={} cols={} rowGroupSize={}B file={}",
+                Thread.currentThread().getId(), threadKey, colCount, rowGroupSize, localFile.getName());
+        return writer;
+    }
+
+    /**
+     * 【关键改动】
+     * 关闭当前 Appender，将落盘文件交给异步提交器，然后从 map 中移除。
+     * 触发场景：行数达到阈值 / 定时器空闲到期 / 程序收到停止信号。
+     * 改为 public static 方便从 IceBergBatchOperationHandler 跨包调用。
+     */
+    public static void rollAndSaveDirectWriter(String threadKey, String tableKey) {
+        GlobalSetConfInfo.FullLoadDirectWriter writer =
+                GlobalSetConfInfo.fullLoadDirectWriterMap.remove(threadKey);
+        if (writer == null) return;
+
+        try {
+            writer.appender.close();
+
+            if (writer.rowCount == 0) {
+                writer.localFile.delete();
+                return;
+            }
+
+            org.apache.iceberg.Table table = GlobalSetConfInfo.IceBergCacheTableMap.get(tableKey);
+            if (table == null) {
+                log.error("[DirectWrite][tid={}] table not found on roll, key={}",
+                        Thread.currentThread().getId(), threadKey);
+                return;
+            }
+
+            org.apache.iceberg.DataFile dataFile = org.apache.iceberg.DataFiles
+                    .builder(table.spec())
+                    .withInputFile(writer.outputFile.toInputFile())
+                    .withMetrics(writer.appender.metrics())
+                    .withFormat(org.apache.iceberg.FileFormat.PARQUET)
+                    .build();
+
+            com.jddm.operation.timer.IcebergFullLoadAsyncCommitter.saveToLocalCache(
+                    tableKey, dataFile, writer.localFile);
+
+            log.info("[DirectWrite][tid={}] rolled key={} rows={} file={}",
+                    Thread.currentThread().getId(), threadKey, writer.rowCount,
+                    writer.localFile.getName());
+
+        } catch (Exception e) {
+            log.error("[DirectWrite][tid={}] roll failed key={} err={}",
+                    Thread.currentThread().getId(), threadKey, e.getMessage(), e);
+        }
+    }
+}

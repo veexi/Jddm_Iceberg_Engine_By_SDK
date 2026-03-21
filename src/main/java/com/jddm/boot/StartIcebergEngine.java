@@ -556,7 +556,6 @@ private static boolean initializeServices() throws InitializationException {
     }
     private static void putWithMemoryGuard(SequencedPackage item) throws InterruptedException {
         Runtime rt = Runtime.getRuntime();
-        while (true) {
 //            long blockStart = 0;
 
             long maxMemory   = rt.maxMemory();
@@ -565,8 +564,8 @@ private static boolean initializeServices() throws InitializationException {
             long usedMemory  = totalMemory - freeMemory;
             double usageRatio = (double) usedMemory / maxMemory;
 
-            if (usageRatio < 0.50) {
-                break;
+            if (usageRatio > 0.80) {
+                Thread.sleep(10000); // gc 需要时间，等久一点再检测
             }
 
 /*            if (blockStart == 0) {
@@ -584,8 +583,7 @@ private static boolean initializeServices() throws InitializationException {
             }*/
 
 //            System.gc(); // 达到 90% 才触发，不会频繁
-            Thread.sleep(500); // gc 需要时间，等久一点再检测
-        }
+
         GlobalSetConfInfo.icebergEngineOperationQueue.put(item);
     }
 }

@@ -53,4 +53,37 @@ public class GlobalSetConfInfo {
      * key = db.table.threadId，value 用 LinkedBlockingDeque 支持 addFirst（用于失败回滚）：
      */
     public static Map<String, LinkedBlockingDeque<RowOperation>> IceBergSchemaImmuTableOpsMap = new ConcurrentHashMap<>();
-}
+
+    /**
+     * 全量直写 Appender 上下文 Map，key = "schema.table.threadId"。
+     * 每个 worker 线程独占一个 FullLoadDirectWriter 实例，天然线程隔离，无需加锁。
+     */
+    public static Map<String, FullLoadDirectWriter> fullLoadDirectWriterMap = new ConcurrentHashMap<>();
+
+    /**
+     * 全量直写上下文内部类：持有本线程当前正在写的本地 Parquet FileAppender 及行数统计。
+     */
+    public static class FullLoadDirectWriter {
+        public final String tableKeyName;
+        public final java.io.File localFile;
+        public final org.apache.iceberg.io.OutputFile outputFile;
+        public final org.apache.iceberg.io.FileAppender<org.apache.iceberg.data.GenericRecord> appender;
+        public int rowCount = 0;
+        /**
+         * 标记该 writer 当前是否正在被 owner 线程写入。
+         * 定时器线程看到 true 时跳过，不强行关闭，等下一个定时器周期再处理。
+         * 使用 volatile 保证多线程可见性。
+         */
+        public volatile boolean activelyWriting = false;
+
+        public FullLoadDirectWriter(String tableKeyName,
+                                    java.io.File localFile,
+                                    org.apache.iceberg.io.OutputFile outputFile,
+                                    org.apache.iceberg.io.FileAppender<org.apache.iceberg.data.GenericRecord> appender) {
+            this.tableKeyName = tableKeyName;
+            this.localFile    = localFile;
+            this.outputFile   = outputFile;
+            this.appender     = appender;
+        }
+    }
+}
