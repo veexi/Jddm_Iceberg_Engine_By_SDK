@@ -69,11 +69,9 @@ public class ReLoaderTableInfoBySqliteDB implements Runnable{
 									log.info(" JddmEngine Put "+thisOdpsKeyName+" to JVM MemoryCache ... ... ");
 									log.info(" =================================================> [ICEBERG] Loaded To JddmEngine MemoryCache  Complete !!! ");
 
-									if(Constant.settingDataBaseName !=null && !Constant.settingDataBaseName.equals("")) {
-										GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(reloadTableKeyVo.getKey().toLowerCase(), Constant.settingDataBaseName+"."+FileUtils.createTableName_ByJddmEngine(tableInfoDBVo.getOwner(),tableInfoDBVo.getTableName()));
-									} else {
-										GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(reloadTableKeyVo.getKey().toLowerCase(), tableInfoDBVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoDBVo.getOwner(),tableInfoDBVo.getTableName()));
-									}
+
+                                    GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(reloadTableKeyVo.getKey().toLowerCase(), tableInfoDBVo.getOwner().toLowerCase()+"."+FileUtils.createTableName_ByJddmEngine(tableInfoDBVo.getOwner(),tableInfoDBVo.getTableName()));
+
 									if(!GlobalConfCommInfo.cacheTableInfoMap.get(reloadTableKeyVo.getKey().toLowerCase()).getColumnList().isEmpty()){
 										TableColumnVo tableColumnVo = null;
 										LinkedHashMap<String, String> tableColumnMap = new LinkedHashMap<String, String>();

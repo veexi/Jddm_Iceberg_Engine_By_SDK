@@ -5,9 +5,11 @@ import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
 import com.jddm.vo.RowOperation;
 import com.jddm.operation.IceBergBatchOperationHandler;
+import com.sun.management.OperatingSystemMXBean;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.lang.management.ManagementFactory;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -19,15 +21,11 @@ import static com.jddm.operation.IceBergBatchOperationHandler.flushAllThreadsFor
 public class TimerByHiveCacheFileThreadV1 implements Runnable {
 
     private static final Logger log = LogManager.getLogger(TimerByHiveCacheFileThreadV1.class);
-
-    @Override
+    private static final OperatingSystemMXBean osBean =
+            (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();    @Override
     public void run() {
         log.info("[tid={}] [HeartBeat].....{}", Thread.currentThread().getId(), GlobalConfInfo.lastDataWriteTimerByParquetMap.size());
-        try {
-            putWithMemoryGuard();
-        } catch (InterruptedException e) {
-            log.info("Memory calculate failed ! wait next");
-        }
+        putWithMemoryGuard();
         try {
             getIceBergHiveCacheFiles();
         } catch (Exception e) {
@@ -95,6 +93,21 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
     public static void getIceBergHiveCacheFiles() throws Exception {
         Set<String> tablesToFlush = new HashSet<>();
 
+        // ★ 全量直写改动：新增一个循环探测空闲到期的直写 Writer
+        for (Map.Entry<String, Long> entry : GlobalConfInfo.lastDataWriteTimerByParquetMap.entrySet()) {
+            String key = entry.getKey();
+            long idleSec = (System.currentTimeMillis() - entry.getValue()) / 1000;
+            if (idleSec >= Constant.hiveDiffTimers) {
+                // 如果本 key 在全量直写 map 中，说明有活跃句柄，需触发 flush
+                if (GlobalSetConfInfo.fullLoadDirectWriterMap.containsKey(key)) {
+                    String[] parts = key.split("[.]");
+                    if (parts.length >= 2) {
+                        tablesToFlush.add(parts[0] + "." + parts[1]);
+                    }
+                }
+            }
+        }
+
         for (Map.Entry<String, Long> entry :
                 GlobalConfInfo.lastDataWriteTimerByParquetMap.entrySet()) {
 
@@ -135,16 +148,17 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
             log.info("[TimerFlush][tid={}] flush done table={}", Thread.currentThread().getId(), tableKeyName);
         }
     }
-    private static void putWithMemoryGuard() throws InterruptedException {
+    private static void putWithMemoryGuard() {
         Runtime rt = Runtime.getRuntime();
         long maxMemory   = rt.maxMemory();
-        long totalMemory = rt.totalMemory();
-        long freeMemory  = rt.freeMemory();
-        long usedMemory  = totalMemory - freeMemory;
-        double usageRatio = (double) usedMemory / maxMemory;
+        long usedMemory  = rt.totalMemory() - rt.freeMemory();
 
-        log.info("[HeartBeat] JDDM Heap Size used={}%% usedMB={}MB freeMB={}MB",
-                String.format("%.1f", usageRatio * 100),
+        double cpuLoad = osBean.getSystemCpuLoad();
+        String cpuStr = (cpuLoad < 0) ? "N/A" : String.format("%.1f%%", cpuLoad * 100);
+
+        log.info("[HeartBeat] CPU={} | Heap used={}% usedMem={}MB freeMem={}MB",
+                cpuStr,
+                String.format("%.1f", (double) usedMemory / maxMemory * 100),
                 usedMemory / 1024 / 1024,
                 (maxMemory - usedMemory) / 1024 / 1024);
     }

@@ -5,7 +5,6 @@ import com.dsg.analysis.tableInfo.vo.TableInfoVo;
 
 import com.dsg.analysis.vo.PackageReturnVo;
 import com.jddm.vo.SequencedPackage;
-import com.jddm.operation.IceBergBatchOperationHandler;
 import com.dsg.operation.common.ConstantSet;
 import com.jddm.common.Constant;
 import com.jddm.conf.Configuration;
@@ -14,12 +13,9 @@ import com.jddm.conf.GlobalSetConfInfo;
 import com.jddm.conf.InitConfigParameter;
 import com.jddm.exception.InitializationException;
 import com.jddm.killOper.JddmEngineKillHandler;
-import com.jddm.manager.ServiceManager;
 import com.jddm.operation.ddl.IceBergTableOperationByEngine;
 import com.jddm.operation.timer.ReLoaderTableInfoBySqliteDB;
-import com.jddm.operation.timer.TimerByHiveCacheFileThread;
 import com.jddm.operation.timer.TimerByHiveCacheFileThreadV1;
-import com.jddm.operation.timer.TimerByIcebergCompactFileThread;
 import com.jddm.thread.OperationTotalSyncByIceBergThreadPool;
 import com.jddm.utils.KerberosAuthUtil;
 import com.publics.cache.TableAllCacheInfo;
@@ -36,11 +32,9 @@ import com.publics.utils.FileUtils;
 import org.apache.commons.beanutils.BeanUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.logging.log4j.core.tools.picocli.CommandLine;
 
 import java.io.File;
 import java.io.InputStream;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.*;
 import java.time.OffsetDateTime;
@@ -163,6 +157,7 @@ public class StartIcebergEngine {
             }
             properties.setProperty("ServerPort", Constant.socketServerPort);
             properties.setProperty("ThreadPoolSize", Constant.socketThreadPoolSize);
+            properties.setProperty("setQueueSize","1000");
             SocketGeneralEngine engine = SocketGeneralEngine.create("path")
                     .setting(properties)
                     .notifying((item) -> {
@@ -205,7 +200,12 @@ public class StartIcebergEngine {
                                     tableCacheInfo.setSourceColumeTypeToYloaderDictionary(cachekeyName, ((TableInfoVo) item));
                                     //写入到sqlite 嵌入式数据库中
                                     sqLiteJDBC = new SQLiteJDBC();
-                                    sqLiteJDBC.recordJddmCacheTable_ToSqliteDB(cachekeyName,((TableInfoVo) item).getObjn()+"",content,tableCacheInfo.serializableTableVo_ToByteArray((TableInfoVo) item));
+                                    try {
+                                        sqLiteJDBC.recordJddmCacheTable_ToSqliteDB(cachekeyName,((TableInfoVo) item).getObjn()+"",content,tableCacheInfo.serializableTableVo_ToByteArray((TableInfoVo) item));
+                                    } catch (Exception e) {
+                                        log.error("Jddm Engine Plug-in Table DDL Write To Sqlite Exception ! table={} objn={} err={}",
+                                        cachekeyName, ((TableInfoVo) item).getObjn(), e.getMessage(), e);
+                                    }
 
                                 }
                                 GlobalConfCommInfo.cacheSourceTableInfoMap.remove(cachekeyName);
@@ -385,7 +385,7 @@ private static boolean initializeServices() throws InitializationException {
                 try {
                     byte[] tableInfoArr = sqliteDB.query_TableContentObject_ByKey(key);
                     if (tableInfoArr == null || tableInfoArr.length < 4) {
-                        log.warn("[Preload] table {} no valid data, skip", key);
+                        log.error("[Preload] table {} no valid data, skip", key);
                         continue;
                     }
                     TableInfoVo tableInfoDBVo = tableCacheInfo.serializableTableVo_ToByteArray(tableInfoArr);
@@ -397,27 +397,24 @@ private static boolean initializeServices() throws InitializationException {
                         GlobalConfCommInfo.cacheSourceTableInfoMap.remove(key);
                     }
                     GlobalConfCommInfo.cacheTableInfoMap.put(key, tableInfoDBVo);
-                    if (Constant.settingDataBaseName != null && !Constant.settingDataBaseName.equals("")) {
-                        GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
-                                Constant.settingDataBaseName + "." + FileUtils.createTableName_ByJddmEngine(
-                                        tableInfoDBVo.getOwner(), tableInfoDBVo.getTableName()));
-                    } else {
-                        GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
+
+                    GlobalConfInfo.jddmEngineByHiveTableCacheMap.put(key,
                                 tableInfoDBVo.getOwner().toLowerCase() + "." + FileUtils.createTableName_ByJddmEngine(
                                         tableInfoDBVo.getOwner(), tableInfoDBVo.getTableName()));
-                    }
                     if (!tableInfoDBVo.getColumnList().isEmpty()) {
                         iceBergTableOperationByEngine.importHiveTable_IceBerg_Table(tableInfoDBVo, tableColumnMap);
                     }
                     loaded++;
                     log.info("[Preload] loaded table {}", key);
                 } catch (Exception e) {
-                    log.warn("[Preload] load table {} failed: {}", key, e.getMessage());
+                    log.error("[Preload] load table {} failed: {}", key, e.getMessage());
+                    e.printStackTrace();
                 }
             }
             log.info("[Preload] done, loaded {} tables", loaded);
         } catch (Exception e) {
-            log.warn("[Preload] SQLite preload failed: {}", e.getMessage());
+            log.error("[Preload] SQLite preload failed: {}", e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -554,25 +551,34 @@ private static boolean initializeServices() throws InitializationException {
     }
     private static void putWithMemoryGuard(SequencedPackage item) throws InterruptedException {
         Runtime rt = Runtime.getRuntime();
-        while (true) {
+//            long blockStart = 0;
+
             long maxMemory   = rt.maxMemory();
             long totalMemory = rt.totalMemory();
             long freeMemory  = rt.freeMemory();
             long usedMemory  = totalMemory - freeMemory;
             double usageRatio = (double) usedMemory / maxMemory;
 
-            if (usageRatio < 0.90) {
-                break;
+            if (usageRatio > 0.80) {
+                Thread.sleep(10000); // gc 需要时间，等久一点再检测
             }
 
-            System.out.printf("[MemGuard] heap high, block producer. used=%.1f%% usedMB=%dMB freeMB=%dMB%n",
-                    usageRatio * 100,
-                    usedMemory / 1024 / 1024,
-                    (maxMemory - usedMemory) / 1024 / 1024);
+/*            if (blockStart == 0) {
+                blockStart = System.currentTimeMillis();
+            }
+            long blockedMs = System.currentTimeMillis() - blockStart;
 
-            System.gc(); // 达到 90% 才触发，不会频繁
-            Thread.sleep(500); // gc 需要时间，等久一点再检测
-        }
+            // 每 5 秒打一次日志，方便观察背压持续时间
+            if (blockedMs % 5000 < 500) {
+                System.out.printf("[MemGuard] heap high, blocking producer. used=%.1f%% usedMB=%dMB freeMB=%dMB blockedMs=%d%n",
+                        usageRatio * 100,
+                        usedMemory / 1024 / 1024,
+                        (maxMemory - usedMemory) / 1024 / 1024,
+                        blockedMs);
+            }*/
+
+//            System.gc(); // 达到 90% 才触发，不会频繁
+
         GlobalSetConfInfo.icebergEngineOperationQueue.put(item);
     }
 }

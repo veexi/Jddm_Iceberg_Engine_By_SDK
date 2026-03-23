@@ -1,13 +1,14 @@
 package com.jddm.killOper;
 
+import com.dsg.operation.utils.OperationTimes;
 import com.jddm.common.Constant;
 import com.jddm.conf.GlobalConfInfo;
 import com.jddm.conf.GlobalSetConfInfo;
 import com.jddm.operation.IceBergBatchOperationHandler;
 import com.publics.common.ConstantPublic;
 import com.publics.conf.GlobalConfCommInfo;
+
 import com.publics.engine.state.EngineStateInfo;
-import com.publics.utils.OperationTimes;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.PartitionSpec;
@@ -100,6 +101,18 @@ public class JddmEngineKillHandler implements SignalHandler{
                 }
                 log.info("[Shutdown] FileSystem cache closed, " + count + " instances released");
             }));
+            if (!GlobalSetConfInfo.fullLoadDirectWriterMap.isEmpty()) {
+                System.out.println(" [StopJddmEngine] Flushing " + GlobalSetConfInfo.fullLoadDirectWriterMap.size() + " direct writers...");
+                for (String threadKey : GlobalSetConfInfo.fullLoadDirectWriterMap.keySet()) {
+                    try {
+                        String tableKey = threadKey.substring(0, threadKey.lastIndexOf('.'));
+                        com.jddm.thread.OperationTotalSyncByIceBergThreadPool.rollAndSaveDirectWriter(threadKey, tableKey);
+                    } catch (Exception e) {
+                        log.error("[StopJddmEngine] flush direct writer failed key=" + threadKey + " err=" + e.getMessage());
+                    }
+                }
+            }
+
             if (!GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.isEmpty()
                     || !GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
 
