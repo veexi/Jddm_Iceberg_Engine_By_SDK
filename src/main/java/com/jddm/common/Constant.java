@@ -45,6 +45,9 @@ public class Constant {
 	/** Iceberg mode: trajectory=append-only, transaction=CRUD+RowDelta */
 	public static String icebergWriteMode = "trajectory";
 
+	/** 增量快速模式：上游已进行合并，且只包含I/D，跳过内部合并逻辑。 */
+	public static boolean INCREMENTAL_FAST_MODE = false;
+
 	/** 小文件合并定时间隔（秒），默认 3600s = 1小时，由 COMPACT_INTERVAL_SECONDS 控制 */
 	public static int compactIntervalSeconds = 3600;
 

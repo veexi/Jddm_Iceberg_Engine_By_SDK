@@ -81,7 +81,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         while (true) {
             try {
                 if (!ConstantPublic.jddmEngineStatFlag) {
-                    continue;
+                    if (GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
+                        log.info("[IceBergPool][tid={}] Engine stopping & queue empty, worker exiting.", threadID);
+                        break;
+                    }
                 }
                 while (GlobalSetConfInfo.icebergEngineOperationQueue.size() > 10000) {
                     log.warn("[IceBergPool][tid={}] queue backpressure, waiting... size={}",
@@ -256,7 +259,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             // 每行创建新的 GenericRecord；全量路径只需 newRecord，oldRecord 直接跳过分配
             GenericRecord newRecord = GenericRecord.create(
                     GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
-            GenericRecord oldRecord = isFullLoad ? null :
+            GenericRecord oldRecord = (isFullLoad || Constant.INCREMENTAL_FAST_MODE) ? null :
                     GenericRecord.create(GlobalSetConfInfo.IceBergSchemaCahceMap.get(schemaKeyByParquet));
 
             boolean hasNewData = false;
@@ -379,8 +382,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 int cflag = columnInfo.getCflag();
                 if ((cflag & 1) == 1) {
                     // before image（前镜像）
-                    fillRecord(oldRecord, columnInfo, schemaKeyByParquet, opType);
-                    hasOldData = true;
+                    if (oldRecord != null) {
+                        fillRecord(oldRecord, columnInfo, schemaKeyByParquet, opType);
+                        hasOldData = true;
+                    }
                 } else {
                     // after image（后镜像）
                     fillRecord(newRecord, columnInfo, schemaKeyByParquet, opType);
@@ -619,6 +624,33 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             if (rawValue == null || rawValue.isEmpty()) return;
 
             String colName = columnInfo.getColumnName().toLowerCase();
+
+            // ★ 增量高速路径：借鉴全量模式的高效绑定（预计算类型转换器+数组下标赋值）
+            java.util.function.Function<String, Object>[] converters = GlobalSetConfInfo.tableColumnConvertersCache.get(schemaKeyByParquet);
+            Map<String, Integer> colPosMap = GlobalSetConfInfo.tableColumnPosCache.get(schemaKeyByParquet);
+
+            if (converters != null && colPosMap != null) {
+                Integer colPos = colPosMap.get(colName);
+                if (colPos == null) {
+                    if (Constant.debugLogEnabled) {
+                        log.warn("[IceBergPool][tid={}] 列 {} 不在 colPosMap 中，跳过。schema={}",
+                                Thread.currentThread().getId(), colName, schemaKeyByParquet);
+                    }
+                    return;
+                }
+                Object converted;
+                try {
+                    converted = converters[colPos].apply(rawValue);
+                } catch (Exception e) {
+                    log.warn("[IceBergPool][tid={}] 列转换异常，降级为 String。col={} val={} err={}",
+                            Thread.currentThread().getId(), colName, rawValue, e.getMessage());
+                    converted = rawValue;
+                }
+                if (converted != null) {
+                    record.set(colPos, converted);
+                }
+                return;
+            }
 
             // 直接从预建缓存中 O(1) 拿类型，不再每次遍历 Schema
             org.apache.iceberg.types.Type fieldType =

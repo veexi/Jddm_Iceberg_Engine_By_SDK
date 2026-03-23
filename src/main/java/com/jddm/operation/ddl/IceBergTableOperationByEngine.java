@@ -416,6 +416,20 @@ public class IceBergTableOperationByEngine {
                     GlobalSetConfInfo.IceBergSchemaCahceMap.put(setTableKeyName, iceBergTable.schema());
                 }
             }
+            // 用实际落盘后的Schema回校pkNames
+            // 防止yloader附加列被登记为PK，但HMS里该表建于此列加入之前，导致flush崩溃
+            List<String> validPkNames = new ArrayList<>();
+            for (String pk : pkNames) {
+                if (iceBergTable.schema().findField(pk) != null) {
+                    validPkNames.add(pk);
+                } else {
+                    log.warn("[DDL] PK col '{}' not in actual Iceberg schema, removed. " +
+                                    "Table may have been created before this yloader add-col was introduced. table={}",
+                            pk, setTableKeyName);
+                }
+            }
+            GlobalSetConfInfo.TablePkColCacheMap.put(setTableKeyName, validPkNames);
+
             for (org.apache.iceberg.types.Types.NestedField f : iceBergTable.schema().columns()) {
                 GlobalSetConfInfo.columnTypeCache.put(setTableKeyName + "." + f.name(), f.type());
             }

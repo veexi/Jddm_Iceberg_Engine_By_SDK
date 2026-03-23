@@ -153,7 +153,7 @@ public class IceBergBatchOperationHandler {
                 log.info("[IceBergBatch][tid={}][COW] flush start table={} ops={} pkNames={}",
                         Thread.currentThread().getId(), tableKeyName, allOps.size(), pkNames);
 
-                MergeResult mergeResult = mergeByPrimaryKey(allOps, pkNames, iceBergTable, tableKeyName);
+                MergeResult mergeResult = getMergeResult(allOps, pkNames, iceBergTable, tableKeyName);
                 log.info("[IceBergBatch][tid={}][COW] merge done table={} insertCount={} deleteCount={}",
                         Thread.currentThread().getId(), tableKeyName,
                         mergeResult.insertRecords.size(), mergeResult.deleteRecords.size());
@@ -258,7 +258,7 @@ public class IceBergBatchOperationHandler {
                 log.info("[IceBergBatch][tid={}][RowDelta] flush start table={} ops={} pkNames={} cowMode={}",
                         Thread.currentThread().getId(), tableKeyName, allOps.size(), pkNames, Constant.cowMode);
 
-                MergeResult mergeResult = mergeByPrimaryKey(allOps, pkNames, iceBergTable, tableKeyName);
+                MergeResult mergeResult = getMergeResult(allOps, pkNames, iceBergTable, tableKeyName);
                 log.info("[IceBergBatch][tid={}][RowDelta] merge done table={} insertCount={} deleteCount={}",
                         Thread.currentThread().getId(), tableKeyName,
                         mergeResult.insertRecords.size(), mergeResult.deleteRecords.size());
@@ -340,6 +340,28 @@ public class IceBergBatchOperationHandler {
     }
 
     // ========== PK merge ==========
+
+    private static MergeResult getMergeResult(List<RowOperation> allOps, List<String> pkNames, Table iceBergTable, String tableKeyName) {
+        if (Constant.INCREMENTAL_FAST_MODE) {
+            List<GenericRecord> fastInserts = new ArrayList<>();
+            List<GenericRecord> fastDeletes = new ArrayList<>();
+            for (RowOperation op : allOps) {
+                if (op.getType() == RowOperation.OpType.INSERT) {
+                    if (op.getNewRecord() != null) fastInserts.add(op.getNewRecord());
+                    else if (op.getOldRecord() != null) fastInserts.add(op.getOldRecord());
+                } else if (op.getType() == RowOperation.OpType.DELETE) {
+                    GenericRecord rec = op.getNewRecord() != null ? op.getNewRecord() : op.getOldRecord();
+                    if (rec != null) fastDeletes.add(rec);
+                } else if (op.getType() == RowOperation.OpType.UPDATE) {
+                    if (op.getOldRecord() != null) fastDeletes.add(op.getOldRecord());
+                    if (op.getNewRecord() != null) fastInserts.add(op.getNewRecord());
+                }
+            }
+            return new MergeResult(fastInserts, fastDeletes);
+        } else {
+            return mergeByPrimaryKey(allOps, pkNames, iceBergTable, tableKeyName);
+        }
+    }
 
     private static MergeResult mergeByPrimaryKey(List<RowOperation> orderedOps,
                                                  List<String> pkNames,
@@ -449,9 +471,19 @@ public class IceBergBatchOperationHandler {
                 new Path(table.location(), "data/" + tableKeyName.replace(".", "/")
                         + "/" + UUID.randomUUID() + ".parquet").toString());
 
+        int colCount = table.schema().columns().size();
+        String rowGroupSize = "134217728";
+        String pageSize = "1048576";
+        if (colCount > 100) {
+            rowGroupSize = "33554432";
+            pageSize = "524288";
+        }
         FileAppender<GenericRecord> appender = Parquet.write(outputFile)
                 .schema(schema)
                 .createWriterFunc(GenericParquetWriter::buildWriter)
+                .set("write.parquet.compression-codec", "snappy")
+                .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                .set("write.parquet.page-size-bytes", pageSize)
                 .build();
 
         try (Closeable toClose = appender) {
@@ -524,10 +556,20 @@ public class IceBergBatchOperationHandler {
                 throw e;
             }
 
+            int colCount = iceBergTable.schema().columns().size();
+            String rowGroupSize = "134217728";
+            String pageSize = "1048576";
+            if (colCount > 100) {
+                rowGroupSize = "33554432";
+                pageSize = "524288";
+            }
             Parquet.DeleteWriteBuilder builder = Parquet.writeDeletes(deleteOut)
                     .forTable(iceBergTable)
                     .rowSchema(pkOnlySchema)
                     .createWriterFunc(GenericParquetWriter::buildWriter)
+                    .set("write.parquet.compression-codec", "snappy")
+                    .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                    .set("write.parquet.page-size-bytes", pageSize)
                     .equalityFieldIds(equalityFieldIds);
 
             if (isPartitioned) builder.withSpec(spec).withPartition(entry.getKey());
@@ -567,6 +609,14 @@ public class IceBergBatchOperationHandler {
             partitionMap.computeIfAbsent(reusablePKey.copy(), k -> new ArrayList<>()).add(record);
         }
 
+        int colCount = table.schema().columns().size();
+        String rowGroupSize = "134217728";
+        String pageSize = "1048576";
+        if (colCount > 100) {
+            rowGroupSize = "33554432";
+            pageSize = "524288";
+        }
+
         List<DataFile> dataFiles = new ArrayList<>();
         for (Map.Entry<PartitionKey, List<GenericRecord>> entry : partitionMap.entrySet()) {
             StringBuilder pathSb = new StringBuilder(table.location());
@@ -584,6 +634,9 @@ public class IceBergBatchOperationHandler {
             FileAppender<GenericRecord> appender = Parquet.write(outputFile)
                     .schema(table.schema())
                     .createWriterFunc(GenericParquetWriter::buildWriter)
+                    .set("write.parquet.compression-codec", "snappy")
+                    .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                    .set("write.parquet.page-size-bytes", pageSize)
                     .build();
 
             try {
