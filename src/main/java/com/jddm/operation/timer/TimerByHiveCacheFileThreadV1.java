@@ -28,8 +28,8 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
         putWithMemoryGuard();
         try {
             getIceBergHiveCacheFiles();
-        } catch (Exception e) {
-            log.error("[TimerFlush][tid={}] Timer Commit Cache File Exception : {}", Thread.currentThread().getId(), e.getMessage(), e);
+        } catch (Throwable t) {
+            log.error("[TimerFlush][tid={}] fatal error in timer thread : {}", Thread.currentThread().getId(), t.getMessage(), t);
         }
     }
 

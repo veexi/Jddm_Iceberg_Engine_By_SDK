@@ -181,9 +181,22 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                             Thread.currentThread().getId(), currentCount, Constant.writeCountNoToHiveFile);
                 }
 
+            } catch (InterruptedException ex) {
+                log.error("[IceBergPool][tid={}] thread interrupted. threadId={}", Thread.currentThread().getId(), threadID, ex);
+                Thread.currentThread().interrupt();
+                break;
             } catch (Exception ex) {
                 ex.printStackTrace();
-                log.error("[IceBergPool][tid={}] thread exit on error. threadId={}", Thread.currentThread().getId(), threadID, ex);
+                log.error("[IceBergPool][tid={}] thread encountered recoverable error. threadId={}", Thread.currentThread().getId(), threadID, ex);
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            } catch (Throwable t) {
+                t.printStackTrace();
+                log.error("[IceBergPool][tid={}] thread exit on fatal error. threadId={}", Thread.currentThread().getId(), threadID, t);
                 break;
             }
         }
@@ -1038,7 +1051,12 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
         }
         } finally {
             // 无论正常完成还是异常，都清除写入标志，让定时器可以安全关闭
-            writer.activelyWriting = false;
+            try {
+                writer.activelyWriting = false;
+            } catch (Exception e) {
+                log.error("[DirectWrite][tid={}] Failed to clear activelyWriting flag for table={}",
+                        Thread.currentThread().getId(), schemaKeyByParquet, e);
+            }
         }
 
         // 更新时间戳，让定时器知道该 key 仍有活跃写入
@@ -1118,7 +1136,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
             writer.appender.close();
 
             if (writer.rowCount == 0) {
-                writer.localFile.delete();
+                if (!writer.localFile.delete()) {
+                    log.warn("[DirectWrite] 空文件删除失败 file={}", writer.localFile.getAbsolutePath());
+                }
                 return;
             }
 

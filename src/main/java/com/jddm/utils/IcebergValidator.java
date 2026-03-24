@@ -152,6 +152,8 @@ public class IcebergValidator {
         properties.put(CatalogProperties.URI, Constant.hiveMetastoreUris);
         properties.put(CatalogProperties.CATALOG_IMPL, "org.apache.iceberg.hive.HiveCatalog");
         properties.put("format-version", "2");
+        properties.put("lock.enabled", "false");
+
         // 初始化catalog
         catalog.initialize("hive", properties);
     }

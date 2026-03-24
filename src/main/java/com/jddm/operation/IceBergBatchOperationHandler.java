@@ -335,6 +335,9 @@ public class IceBergBatchOperationHandler {
             for (GenericRecord r : reader) {
                 result.add(r.copy());
             }
+        } catch (Exception e) {
+            log.error("读取数据文件失败 path={}", task.file().path(), e);
+            throw e;
         }
         return result;
     }
@@ -486,16 +489,16 @@ public class IceBergBatchOperationHandler {
                 .set("write.parquet.page-size-bytes", pageSize)
                 .build();
 
-        try (Closeable toClose = appender) {
-            try {
-                for (GenericRecord record : records) {
-                    appender.add(record);
-                }
-            } catch (Exception e) {
-                log.error("[IceBergBatch][tid={}] Error writing data file (simple): {}, tableKeyName={}",
-                        Thread.currentThread().getId(), outputFile.location(), tableKeyName, e);
-                throw e;
+        try {
+            for (GenericRecord record : records) {
+                appender.add(record);
             }
+        } catch (Exception e) {
+            log.error("[IceBergBatch][tid={}] Error writing data file (simple): {}, tableKeyName={}",
+                    Thread.currentThread().getId(), outputFile.location(), tableKeyName, e);
+            throw e;
+        } finally {
+            appender.close();
         }
 
         return DataFiles.builder(table.spec())
@@ -952,13 +955,18 @@ public class IceBergBatchOperationHandler {
                     LinkedBlockingDeque<RowOperation> fallbackQueue =
                             GlobalSetConfInfo.IceBergSchemaImmuTableOpsMap.get(fallbackKey);
                     if (fallbackQueue != null) {
-                        synchronized (fallbackQueue) {
-                            for (int i = allOps.size() - 1; i >= 0; i--) {
-                                fallbackQueue.addFirst(allOps.get(i));
+                        try {
+                            synchronized (fallbackQueue) {
+                                for (int i = allOps.size() - 1; i >= 0; i--) {
+                                    fallbackQueue.addFirst(allOps.get(i));
+                                }
                             }
+                            log.error("[IceBergBatch][tid={}] Rolled back {} ops to key={}",
+                                    Thread.currentThread().getId(), allOps.size(), fallbackKey);
+                        } catch (Exception fe) {
+                            log.error("[IceBergBatch][tid={}] Error reverting ops to fallbackQueue key={} err={}",
+                                    Thread.currentThread().getId(), fallbackKey, fe.getMessage(), fe);
                         }
-                        log.error("[IceBergBatch][tid={}] Rolled back {} ops to key={}",
-                                Thread.currentThread().getId(), allOps.size(), fallbackKey);
                     }
                 }
                 throw e;
@@ -1007,7 +1015,32 @@ public class IceBergBatchOperationHandler {
                 log.error("[IceBergBatch][tid={}] validation failed key={} error={} dataFiles={} deleteFiles={}",
                         Thread.currentThread().getId(), logKey, ve.getMessage(), dataPaths, deletePaths);
                 throw new RuntimeException("[IceBergBatch] ValidationException. key=" + logKey, ve);
-            }
+            }catch (Exception e) {
+                    String errMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                    log.error("[IceBergBatch][tid={}] commit failed with unexpected error key={} attempt={}/{} error={}",
+                            Thread.currentThread().getId(), logKey, attempt, maxRetry, errMsg, e);
+
+                    if (attempt >= maxRetry)
+                        throw new RuntimeException("[IceBergBatch] commit retry exhausted key=" + logKey, e);
+
+                    // If HMS lock contention detected, force refresh to release stale lock state
+                    if (errMsg.contains("WaitingForLock") || errMsg.contains("Waiting for lock")) {
+                        log.warn("[IceBergBatch][tid={}] HMS lock contention detected, forcing refresh before retry. key={}",
+                                Thread.currentThread().getId(), logKey);
+                        try {
+                            iceBergTable.refresh();
+                        } catch (Exception refreshEx) {
+                            log.warn("[IceBergBatch][tid={}] table.refresh() failed during lock recovery key={} err={}",
+                                    Thread.currentThread().getId(), logKey, refreshEx.getMessage());
+                        }
+                    }
+
+                    try {
+                        Thread.sleep(500L * attempt);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
         }
     }
 
@@ -1521,6 +1554,7 @@ public class IceBergBatchOperationHandler {
                         GlobalSetConfInfo.fullLoadDirectWriterMap.get(threadKey);
                 if (writer != null && writer.activelyWriting) {
                     log.info("[DirectWrite] flushDirectWriters skip active writer key={}", threadKey);
+                    GlobalConfInfo.lastDataWriteTimerByParquetMap.put(threadKey, System.currentTimeMillis());
                     continue;
                 }
 
@@ -1538,4 +1572,4 @@ public class IceBergBatchOperationHandler {
         if (colCount > 100) return 2000;  // 100-col table: close file every 2000 rows
         return 10000;                     // normal table: close file every 10000 rows
     }
-}
+}

@@ -282,6 +282,7 @@ private static boolean initializeServices() throws InitializationException {
         jddmKillHandler.registerSignal("INT");
 
         scheduledThreadPool = Executors.newScheduledThreadPool(6);
+        jddmKillHandler.setScheduledThreadPool(scheduledThreadPool);
 
         scheduledThreadPool.scheduleAtFixedRate(
                 new TimerByHiveCacheFileThreadV1(), 5, 5, TimeUnit.SECONDS);
@@ -359,8 +360,8 @@ private static boolean initializeServices() throws InitializationException {
      */
     private static void preloadTableDictFromSqlite() {
         Logger log = LogManager.getLogger(StartIcebergEngine.class);
-        try {
-            SQLiteJDBC sqliteDB = new SQLiteJDBC();
+        SQLiteJDBC sqliteDB = new SQLiteJDBC();
+        try  {
             List<String> allKeys = sqliteDB.queryJddmCacheTableList();
             if (allKeys == null || allKeys.isEmpty()) {
                 log.info("[Preload] SQLite no table cache, skip");
@@ -560,7 +561,11 @@ private static boolean initializeServices() throws InitializationException {
             double usageRatio = (double) usedMemory / maxMemory;
 
             if (usageRatio > 0.80) {
-                Thread.sleep(10000); // gc 需要时间，等久一点再检测
+                try {
+                    Thread.sleep(10000); // gc 需要时间，等久一点再检测
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
 
 /*            if (blockStart == 0) {

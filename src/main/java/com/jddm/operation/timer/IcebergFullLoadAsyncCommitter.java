@@ -158,6 +158,17 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
                                 try { Thread.sleep(200L * attempt); } catch (InterruptedException ie) {
                                     Thread.currentThread().interrupt();
                                 }
+                            } catch (Exception e) {
+                                log.error("[AsyncCommitter] Commit failed with unexpected error, retry table={} attempt={}/{} err={}",
+                                        tableKey, attempt, maxRetry, e.getMessage(), e);
+                                if (attempt >= maxRetry) {
+                                    throw new RuntimeException(
+                                            "[AsyncCommitter] commit retry exhausted (unexpected error) table=" + tableKey, e);
+                                }
+                                table.refresh();
+                                try { Thread.sleep(500L * attempt); } catch (InterruptedException ie) {
+                                    Thread.currentThread().interrupt();
+                                }
                             }
                         }
                         cleanUpLocalFiles(tableKey, processedMetaFiles, processedParquetFiles);
@@ -206,6 +217,7 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
             fs.copyFromLocalFile(false, true, src, tmpDst);
             // 2. 原子的 rename 操作
             if (!fs.rename(tmpDst, dst)) {
+                fs.delete(tmpDst, false);
                 throw new RuntimeException("HDFS rename failed: " + tmpDst + " -> " + dst);
             }
             long uploadEnd = System.currentTimeMillis();
@@ -284,10 +296,15 @@ public class IcebergFullLoadAsyncCommitter implements Runnable {
         conf.set("dfs.client.block.write.replace-datanode-on-failure.enable", "true");
         conf.set("dfs.client.block.write.replace-datanode-on-failure.policy", "NEVER");
 
-        fs = FileSystem.get(new Path(table.location()).toUri(), conf);
-        fsCache.put(tableKey, fs);
-        log.info("[AsyncCommitter] FileSystem initialized for table={} replication=1", tableKey);
-        return fs;
+        try {
+            fs = FileSystem.get(new Path(table.location()).toUri(), conf);
+            fsCache.put(tableKey, fs);
+            log.info("[AsyncCommitter] FileSystem initialized for table={} replication=1", tableKey);
+            return fs;
+        } catch (Exception e) {
+            log.error("[AsyncCommitter] Configured FileSystem failed to initialize for table={}", tableKey, e);
+            throw e;
+        }
     }
     public static void saveToLocalCache(String tableKey, DataFile dataFile, File localParquetFile) throws Exception {
         File cacheDir = new File(Constant.basicWorkPath, CACHE_DIR_NAME + File.separator + tableKey);

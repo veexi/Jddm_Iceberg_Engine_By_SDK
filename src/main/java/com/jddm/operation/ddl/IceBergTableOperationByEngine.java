@@ -315,6 +315,7 @@ public class IceBergTableOperationByEngine {
             createSqlString.append(")");
         }
 
+        HiveCatalog catalog = null;
         try {
 
             Table iceBergTable;
@@ -322,7 +323,7 @@ public class IceBergTableOperationByEngine {
             TableIdentifier tableIdentifier = TableIdentifier.of(tableInfoVo.getOwner().toLowerCase(),tableInfoVo.getTableName().toLowerCase());
 
             log.info(" ========== JDBC IceBerg DDL_CreateSQL :::"+tableIdentifier.toString());
-            HiveCatalog catalog = new HiveCatalog();
+            catalog = new HiveCatalog();
             Configuration hadoopConf = KerberosAuthUtil.buildHadoopConf();
             String dynamicHiveSitePath = Constant.basicWorkPath + java.io.File.separator + "config" + java.io.File.separator + "hive-site.xml";
             hadoopConf.addResource(new org.apache.hadoop.fs.Path(dynamicHiveSitePath));
@@ -333,6 +334,7 @@ public class IceBergTableOperationByEngine {
             properties.put(CatalogProperties.URI, Constant.hiveMetastoreUris);
             properties.put(CatalogProperties.CATALOG_IMPL, "org.apache.iceberg.hive.HiveCatalog");
             properties.put("format-version", "2");
+            properties.put("lock.enabled", "false");
 
             catalog.initialize("hive", properties);
             log.info("[DDL] Original config fsDefaultInfo : {} ,hiveMetastoreUris : {}", Constant.fsDefaultInfo, Constant.hiveMetastoreUris);
@@ -470,7 +472,11 @@ public class IceBergTableOperationByEngine {
             socketReturnVo.setErrorMsg(e.getMessage());
             return socketReturnVo;
         } finally{
-
+            if (catalog != null) {
+                try {
+                    catalog.close();
+                } catch (Exception ignored) {}
+            }
         }
 
     }

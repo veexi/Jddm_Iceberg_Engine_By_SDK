@@ -36,6 +36,11 @@ public class JddmEngineKillHandler implements SignalHandler{
 	private final long throttleInterval;
 	private final TimeUnit timeUnit;
 	private final AtomicBoolean isAllowedToRun = new AtomicBoolean(true);
+    private java.util.concurrent.ScheduledExecutorService scheduledThreadPool;
+
+    public void setScheduledThreadPool(java.util.concurrent.ScheduledExecutorService scheduledThreadPool) {
+        this.scheduledThreadPool = scheduledThreadPool;
+    }
 	
 	public JddmEngineKillHandler(long throttleInterval, TimeUnit timeUnit) {
 		this.throttleInterval = throttleInterval;
@@ -94,6 +99,10 @@ public class JddmEngineKillHandler implements SignalHandler{
             //===============================================================================================
             // Total Synchronization Data Operation Processing Before Stopping The (Jddm) Engine
             //===============================================================================================
+            if (this.scheduledThreadPool != null) {
+                this.scheduledThreadPool.shutdown();
+                System.out.println(" [StopJddmEngine] scheduledThreadPool shutdown initiated.");
+            }
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 int count = fsCache.size();
                 for (org.apache.hadoop.fs.FileSystem fs : fsCache.values()) {
@@ -117,7 +126,8 @@ public class JddmEngineKillHandler implements SignalHandler{
                     || !GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
 
 
-                while (!GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty()) {
+                long deadline = System.currentTimeMillis() + 60_000;
+                while (!GlobalSetConfInfo.icebergEngineOperationQueue.isEmpty() && System.currentTimeMillis() < deadline) {
                     System.out.println(" [StopJddmEngine] queue draining, remaining="
                             + GlobalSetConfInfo.icebergEngineOperationQueue.size());
                     try {
