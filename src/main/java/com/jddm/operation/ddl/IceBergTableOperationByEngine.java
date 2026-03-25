@@ -471,12 +471,6 @@ public class IceBergTableOperationByEngine {
             socketReturnVo.setTradeType("kafkaTable");
             socketReturnVo.setErrorMsg(e.getMessage());
             return socketReturnVo;
-        } finally{
-            if (catalog != null) {
-                try {
-                    catalog.close();
-                } catch (Exception ignored) {}
-            }
         }
 
     }
