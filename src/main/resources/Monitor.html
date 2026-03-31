@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JDDM Iceberg 实时同步引擎监控</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #f4f7fa;
+            --card-bg: #ffffff;
+            --text-main: #2c3e50;
+            --text-muted: #7f8c8d;
+            --primary-color: #3498db;
+            --success-color: #2ecc71;
+            --warning-color: #f1c40f;
+            --danger-color: #e74c3c;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            color: var(--text-main);
+            margin-bottom: 30px;
+        }
+        /* 顶部卡片网格 */
+        .cards-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            text-align: center;
+        }
+        .card h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            color: var(--text-muted);
+        }
+        .card .value {
+            font-size: 28px;
+            font-weight: bold;
+            color: var(--primary-color);
+        }
+        /* 图表网格 */
+        .charts-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .chart-box {
+            background-color: var(--card-bg);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            height: 350px;
+        }
+        /* 表格区域 */
+        .table-container {
+            background-color: var(--card-bg);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+        }
+        th, td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #ecf0f1;
+        }
+        th {
+            background-color: #f8f9fa;
+            color: var(--text-muted);
+        }
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            color: white;
+            background-color: var(--success-color);
+        }
+    </style>
+</head>
+<body>
+
+    <h1>JDDM Iceberg Engine 监控大屏</h1>
+
+    <div class="cards-container">
+        <div class="card">
+            <h3>JVM 内存使用率</h3>
+            <div class="value" id="val-memory">0%</div>
+        </div>
+        <div class="card">
+            <h3>CPU 使用率</h3>
+            <div class="value" id="val-cpu">0%</div>
+        </div>
+        <div class="card">
+            <h3>待处理积压队列 (Queue Size)</h3>
+            <div class="value" id="val-queue" style="color: var(--warning-color)">0</div>
+        </div>
+        <div class="card">
+            <h3>总计同步行数</h3>
+            <div class="value" id="val-total-rows" style="color: var(--success-color)">0</div>
+        </div>
+        <div class="card">
+            <h3>活跃线程数</h3>
+            <div class="value" id="val-threads">0</div>
+        </div>
+    </div>
+
+    <div class="charts-container">
+        <div class="chart-box" id="throughputChart"></div>
+        <div class="chart-box" id="memoryChart"></div>
+    </div>
+
+    <div class="table-container">
+        <h3>各表同步实时状态 (Table Metrics)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>表名称 (Table Key)</th>
+                    <th>累计处理行数</th>
+                    <th>最后写入时间</th>
+                    <th>状态</th>
+                </tr>
+            </thead>
+            <tbody id="table-body">
+                </tbody>
+        </table>
+    </div>
+
+    <script>
+        // 初始化 ECharts 实例
+        const throughputChart = echarts.init(document.getElementById('throughputChart'));
+        const memoryChart = echarts.init(document.getElementById('memoryChart'));
+
+        // 图表基础配置
+        const timeData = [];
+        const throughputData = [];
+        const memoryUsedData = [];
+
+        throughputChart.setOption({
+            title: { text: '实时吞吐量 (Rows/sec)' },
+            tooltip: { trigger: 'axis' },
+            xAxis: { type: 'category', data: timeData },
+            yAxis: { type: 'value' },
+            series: [{ data: throughputData, type: 'line', smooth: true, areaStyle: {}, itemStyle: { color: '#3498db' } }]
+        });
+
+        memoryChart.setOption({
+            title: { text: 'JVM 内存使用量 (MB)' },
+            tooltip: { trigger: 'axis' },
+            xAxis: { type: 'category', data: timeData },
+            yAxis: { type: 'value' },
+            series: [{ data: memoryUsedData, type: 'line', smooth: true, areaStyle: {}, itemStyle: { color: '#e74c3c' } }]
+        });
+
+        // 模拟数据生成器（当后端接口不存在时使用）
+        let mockTotalRows = 105000;
+        function getMockData() {
+            const now = new Date();
+            const timeStr = now.getHours() + ':' + now.getMinutes() + ':' + now.getSeconds();
+            const throughput = Math.floor(Math.random() * 5000) + 1000;
+            mockTotalRows += throughput;
+
+            return {
+                timestamp: timeStr,
+                system: {
+                    cpuUsage: (Math.random() * 20 + 5).toFixed(1), // 5% - 25%
+                    memoryUsedMb: Math.floor(Math.random() * 500 + 1024), // 1024 - 1524 MB
+                    memoryMaxMb: 4096,
+                    activeThreads: Math.floor(Math.random() * 10 + 40)
+                },
+                engine: {
+                    queueSize: Math.floor(Math.random() * 500),
+                    throughputPerSec: throughput,
+                    totalRowsProcessed: mockTotalRows
+                },
+                tables: [
+                    { tableName: "public.user_info", rowsProcessed: mockTotalRows * 0.4, lastWriteTime: timeStr },
+                    { tableName: "public.order_data", rowsProcessed: mockTotalRows * 0.6, lastWriteTime: timeStr }
+                ]
+            };
+        }
+
+        // 核心更新逻辑：从后端拉取数据并更新页面
+        async function fetchMetricsAndUpdate() {
+            let data;
+            try {
+                // TODO: 这里配置你 Java 后端提供的真实接口地址
+                const response = await fetch('/api/metrics'); 
+                if (!response.ok) throw new Error("API not available");
+                data = await response.json();
+            } catch (error) {
+                // 如果抓取失败（比如还没写好后端），则使用模拟数据保持页面运转
+                data = getMockData();
+            }
+
+            // 1. 更新顶部卡片
+            const memPercent = ((data.system.memoryUsedMb / data.system.memoryMaxMb) * 100).toFixed(1);
+            document.getElementById('val-memory').innerText = memPercent + '%';
+            document.getElementById('val-cpu').innerText = data.system.cpuUsage + '%';
+            document.getElementById('val-queue').innerText = data.engine.queueSize;
+            document.getElementById('val-total-rows').innerText = data.engine.totalRowsProcessed.toLocaleString();
+            document.getElementById('val-threads').innerText = data.system.activeThreads;
+
+            // 2. 更新图表数据
+            if (timeData.length > 20) {
+                timeData.shift();
+                throughputData.shift();
+                memoryUsedData.shift();
+            }
+            timeData.push(data.timestamp);
+            throughputData.push(data.engine.throughputPerSec);
+            memoryUsedData.push(data.system.memoryUsedMb);
+
+            throughputChart.setOption({ xAxis: { data: timeData }, series: [{ data: throughputData }] });
+            memoryChart.setOption({ xAxis: { data: timeData }, series: [{ data: memoryUsedData }] });
+
+            // 3. 更新表格
+            const tbody = document.getElementById('table-body');
+            tbody.innerHTML = ''; // 清空旧数据
+            data.tables.forEach(table => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong>${table.tableName}</strong></td>
+                    <td>${Math.floor(table.rowsProcessed).toLocaleString()}</td>
+                    <td>${table.lastWriteTime}</td>
+                    <td><span class="status-badge">Syncing</span></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // 每隔 2 秒刷新一次数据
+        setInterval(fetchMetricsAndUpdate, 2000);
+        // 页面加载完成立刻执行一次
+        fetchMetricsAndUpdate();
+
+        // 监听窗口大小变化，让图表自适应缩放
+        window.addEventListener('resize', () => {
+            throughputChart.resize();
+            memoryChart.resize();
+        });
+    </script>
+</body>
+</html>
