@@ -25,6 +25,7 @@ import java.io.Closeable;
 import java.io.File;
 import java.util.*;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
 /**
@@ -571,8 +572,11 @@ public class IceBergBatchOperationHandler {
                     .rowSchema(pkOnlySchema)
                     .createWriterFunc(GenericParquetWriter::buildWriter)
                     .set("write.parquet.compression-codec", "snappy")
+                    .set("write.delete.parquet.compression-codec", "snappy")
                     .set("write.parquet.row-group-size-bytes", rowGroupSize)
+                    .set("write.delete.parquet.row-group-size-bytes", rowGroupSize)
                     .set("write.parquet.page-size-bytes", pageSize)
+                    .set("write.delete.parquet.page-size-bytes", pageSize)
                     .equalityFieldIds(equalityFieldIds);
 
             if (isPartitioned) builder.withSpec(spec).withPartition(entry.getKey());
@@ -939,6 +943,20 @@ public class IceBergBatchOperationHandler {
                 }
 
                 keysToRemove.forEach(k -> {
+                    // 在清零之前，把本批次行数累加到永久计数器
+                    java.util.concurrent.atomic.AtomicInteger batchCount =
+                            GlobalConfInfo.engineAtomicByTableKeyMap.get(k);
+                    if (batchCount != null) {
+                        // key 格式是 db.table.threadId，截取 db.table 部分
+                        String tableKey = k.contains(".")
+                                ? k.substring(0, k.indexOf('.', k.indexOf('.') + 1) > 0
+                                ? k.indexOf('.', k.indexOf('.') + 1)
+                                : k.length())
+                                : k;
+                        GlobalConfInfo.cumulativeRowsByTableMap
+                                .computeIfAbsent(tableKey, x -> new AtomicLong(0L))
+                                .addAndGet(batchCount.get());
+                    }
                     GlobalSetConfInfo.IceBergTableGnericCacheMap.remove(k);
                     GlobalConfInfo.lastDataWriteTimerByParquetMap.remove(k);
                     GlobalConfInfo.engineAtomicByTableKeyMap.remove(k);
@@ -946,8 +964,18 @@ public class IceBergBatchOperationHandler {
 
             } catch (Exception e) {
                 int remaining = allOps.size();
-                log.error("[IceBergBatch][tid={}] Flush failed table={} flushedOps={}/{} remaining={}. Error: {}",
-                        Thread.currentThread().getId(), tableKeyName, flushedUntil, totalOps, remaining, e.getMessage());
+                log.error("\n" +
+                        "========================================================\n" +
+                        "[ IceBerg Flush Failure ]\n" +
+                        "  |- Table Name     : {}\n" +
+                        "  |- Thread ID      : {}\n" +
+                        "  |- Flushed Ops    : {} / {}\n" +
+                        "  |- Remaining Ops  : {}\n" +
+                        "  |- Exception Type : {}\n" +
+                        "  |- Error Message  : {}\n" +
+                        "========================================================",
+                        tableKeyName, Thread.currentThread().getId(), flushedUntil, totalOps, remaining,
+                        e.getClass().getName(), e.getMessage(), e);
 
                 // Roll back unprocessed incremental ops to the first queue for retry
                 if (!allOps.isEmpty() && !keysToRemove.isEmpty()) {
@@ -961,10 +989,22 @@ public class IceBergBatchOperationHandler {
                                     fallbackQueue.addFirst(allOps.get(i));
                                 }
                             }
-                            log.error("[IceBergBatch][tid={}] Rolled back {} ops to key={}",
+                            log.error("\n" +
+                                    "--------------------------------------------------------\n" +
+                                    "[ IceBerg Rollback Triggered ]\n" +
+                                    "  |- Thread ID      : {}\n" +
+                                    "  |- Rolled Back    : {} ops\n" +
+                                    "  |- Fallback Key   : {}\n" +
+                                    "--------------------------------------------------------",
                                     Thread.currentThread().getId(), allOps.size(), fallbackKey);
                         } catch (Exception fe) {
-                            log.error("[IceBergBatch][tid={}] Error reverting ops to fallbackQueue key={} err={}",
+                            log.error("\n" +
+                                    "--------------------------------------------------------\n" +
+                                    "[ IceBerg Rollback Failure ]\n" +
+                                    "  |- Thread ID      : {}\n" +
+                                    "  |- Fallback Key   : {}\n" +
+                                    "  |- Error Message  : {}\n" +
+                                    "--------------------------------------------------------",
                                     Thread.currentThread().getId(), fallbackKey, fe.getMessage(), fe);
                         }
                     }

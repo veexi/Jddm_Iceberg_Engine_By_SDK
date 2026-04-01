@@ -413,6 +413,7 @@ public class IceBergTableOperationByEngine {
                 } else {
                     iceBergTable = catalog.loadTable(tableIdentifier);
                     log.info("[DDL] Successfully loaded existing Iceberg table: {}", tableIdentifier);
+                    log.info("[DDL] Update {} Schema Cache : {}",tableIdentifier,iceBergTable.schema().toString());
                     GlobalSetConfInfo.IceBergCacheTableMap.put(setTableKeyName, iceBergTable);
                     // load 场景：用 HMS 真实 schema 覆盖内存自建 schema，确保两者完全一致
                     GlobalSetConfInfo.IceBergSchemaCahceMap.put(setTableKeyName, iceBergTable.schema());

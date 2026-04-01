@@ -4,6 +4,7 @@ import com.dsg.analysis.tableInfo.vo.SourceTableInfoVo;
 import com.dsg.analysis.tableInfo.vo.TableInfoVo;
 
 import com.dsg.analysis.vo.PackageReturnVo;
+import com.jddm.monitor.MonitorHttpServer;
 import com.jddm.vo.SequencedPackage;
 import com.dsg.operation.common.ConstantSet;
 import com.jddm.common.Constant;
@@ -305,6 +306,7 @@ private static boolean initializeServices() throws InitializationException {
         for (int i = 0; i < totalSyncNO; i++) {
             fixedThreadPool.execute(new OperationTotalSyncByIceBergThreadPool());
         }
+//        MonitorHttpServer.start(8089);
         returnFlag = true;
 
     } catch (Exception e) {

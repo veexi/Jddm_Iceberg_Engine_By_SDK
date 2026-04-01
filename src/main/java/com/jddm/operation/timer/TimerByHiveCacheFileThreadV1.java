@@ -29,7 +29,14 @@ public class TimerByHiveCacheFileThreadV1 implements Runnable {
         try {
             getIceBergHiveCacheFiles();
         } catch (Throwable t) {
-            log.error("[TimerFlush][tid={}] fatal error in timer thread : {}", Thread.currentThread().getId(), t.getMessage(), t);
+            log.error("\n" +
+                    "========================================================\n" +
+                    "[ IceBerg Timer Fatal Error ]\n" +
+                    "  |- Thread ID      : {}\n" +
+                    "  |- Exception Type : {}\n" +
+                    "  |- Error Message  : {}\n" +
+                    "========================================================",
+                    Thread.currentThread().getId(), t.getClass().getName(), t.getMessage(), t);
         }
     }
 

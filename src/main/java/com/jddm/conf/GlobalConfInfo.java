@@ -26,7 +26,7 @@ public class GlobalConfInfo{
 		GlobalConfInfo.conf = conf;
 	}
 
-
+    public static Map<String, AtomicLong> cumulativeRowsByTableMap = new ConcurrentHashMap<>();
 	public static Object getDbOperServiceObj() {
 		return dbOperServiceObj;
 	}
