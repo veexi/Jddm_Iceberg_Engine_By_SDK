@@ -450,7 +450,7 @@ public class IceBergTableOperationByEngine {
                 String name = f.name(); // schema 里已经是 lowercase
                 colNames[i] = name;
                 colPosMap.put(name, i);
-                converters[i] = buildConverter(f.type());
+                converters[i] = buildConverter(f.type(), setTableKeyName, name);
             }
 
             GlobalSetConfInfo.tableColumnNamesCache.put(setTableKeyName, colNames);
@@ -716,7 +716,7 @@ public class IceBergTableOperationByEngine {
  * 避免跨类引用的编译问题。
  */
     public static java.util.function.Function<String, Object> buildConverter(
-            org.apache.iceberg.types.Type fieldType) {
+            org.apache.iceberg.types.Type fieldType, String tableName, String columnName) {
 
         if (fieldType instanceof org.apache.iceberg.types.Types.StringType) {
             return (String v) -> v;
@@ -785,7 +785,11 @@ public class IceBergTableOperationByEngine {
         return (String v) -> OperationTotalSyncByIceBergThreadPool.parseTimestampValue(v.trim(), withZone);
 
     } else {
-        return (String v) -> v;
+        return (String v) -> {
+            OperationTotalSyncByIceBergThreadPool.log.warn("[IceBergPool] unlisted type fallback, downgrading to null. table={} type={} col={} val={}",
+                    tableName, fieldType, columnName, v);
+            return null;
+        };
     }
     }
 }

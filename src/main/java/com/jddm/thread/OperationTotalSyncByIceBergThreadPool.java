@@ -352,7 +352,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         if (colPos == null) {
                             // schema 中不存在此列（DDL 变更场景），跳过，不报错
                             if (Constant.debugLogEnabled) {
-                                log.warn("[IceBergPool][tid={}] 全量列 {} 不在 colPosMap 中，跳过。table={}",
+                                log.warn("[IceBergPool][tid={}] real col {} not in colPosMap,skip. table={}",
                                         Thread.currentThread().getId(), colNameLower, schemaKeyByParquet);
                             }
                             hasNewData = true;
@@ -362,10 +362,10 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         try {
                             convertedVal = converters[colPos].apply(rawVal);
                         } catch (Exception e) {
-                            // 转换异常时降级保留原始字符串，不中断整行处理
-                            log.warn("[IceBergPool][tid={}] 全量列转换异常，降级为 String。col={} val={} err={}",
-                                    Thread.currentThread().getId(), colNameLower, rawVal, e.getMessage());
-                            convertedVal = rawVal;
+                            // 转换异常时不再降级为String，改为写入null
+                            log.warn("[IceBergPool][tid={}] column conversion exception, writing null. table={} col={} val={} err={}",
+                                    Thread.currentThread().getId(), schemaKeyByParquet, colNameLower, rawVal, e.getMessage());
+                            convertedVal = null;
                         }
                         if (convertedVal != null) {
                             // ★ 核心：用 int 位置赋值，GenericRecord 内部直接数组操作
@@ -376,9 +376,14 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                         //   功能完全正确，性能低于快速路径，但不影响数据完整性
                         org.apache.iceberg.types.Type fieldType =
                                 GlobalSetConfInfo.columnTypeCache.get(schemaKeyByParquet + "." + colNameLower);
-                        Object convertedVal = (fieldType != null)
-                                ? convertValue(rawVal, fieldType, colNameLower)
-                                : rawVal;
+                        Object convertedVal;
+                        if (fieldType != null) {
+                            convertedVal = convertValue(rawVal, fieldType, colNameLower, schemaKeyByParquet);
+                        } else {
+                            log.warn("[IceBergPool][tid={}] column type not found, downgrading to null. table={} col={} val={}",
+                                    Thread.currentThread().getId(), schemaKeyByParquet, colNameLower, rawVal);
+                            convertedVal = null;
+                        }
                         if (convertedVal != null) {
                             newRecord.setField(colNameLower, convertedVal);
                         }
@@ -646,7 +651,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 Integer colPos = colPosMap.get(colName);
                 if (colPos == null) {
                     if (Constant.debugLogEnabled) {
-                        log.warn("[IceBergPool][tid={}] 列 {} 不在 colPosMap 中，跳过。schema={}",
+                        log.warn("[IceBergPool][tid={}] col {} not in colPosMap,skip. schema={}",
                                 Thread.currentThread().getId(), colName, schemaKeyByParquet);
                     }
                     return;
@@ -655,9 +660,9 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 try {
                     converted = converters[colPos].apply(rawValue);
                 } catch (Exception e) {
-                    log.warn("[IceBergPool][tid={}] 列转换异常，降级为 String。col={} val={} err={}",
-                            Thread.currentThread().getId(), colName, rawValue, e.getMessage());
-                    converted = rawValue;
+                    log.warn("[IceBergPool][tid={}] column conversion exception, writing null. table={} col={} val={} err={}",
+                            Thread.currentThread().getId(), schemaKeyByParquet, colName, rawValue, e.getMessage());
+                    converted = null;
                 }
                 if (converted != null) {
                     record.set(colPos, converted);
@@ -676,7 +681,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                 return;
             }
 
-            Object converted = convertValue(rawValue, fieldType, colName);
+            Object converted = convertValue(rawValue, fieldType, colName, schemaKeyByParquet);
             if (converted != null) {
                 record.setField(colName, converted);
             }
@@ -749,7 +754,8 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
      */
     private Object convertValue(String rawValue,
                                 org.apache.iceberg.types.Type fieldType,
-                                String colName) {
+                                String colName,
+                                String schemaKeyByParquet) {
         if (rawValue == null || rawValue.isEmpty()) return null;
         try {
             if (fieldType instanceof org.apache.iceberg.types.Types.StringType) {
@@ -845,12 +851,16 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     return parseTimestampValue(rawValue.trim(), withZone);
 
             } else if (fieldType instanceof org.apache.iceberg.types.Types.BinaryType) {
-                // 按要求统一降级为 string 处理
-                return rawValue;
+                // 按要求统一降级为 null 处理
+                log.warn("[IceBergPool][tid={}] BinaryType downgrading to null. table={} col={} val={}",
+                        Thread.currentThread().getId(), schemaKeyByParquet, colName, rawValue);
+                return null;
 
             } else {
-                // FloatType、DoubleType 等其他未列举类型兜底
-                return rawValue;
+                // FloatType、DoubleType 等其他未列举类型兜底，改为 null
+                log.warn("[IceBergPool][tid={}] unlisted type fallback, downgrading to null. table={} type={} col={} val={}",
+                        Thread.currentThread().getId(), schemaKeyByParquet, fieldType, colName, rawValue);
+                return null;
             }
         } catch (Exception e) {
             log.warn("[IceBergPool][tid={}] convertValue failed col={} type={} val='{}' err={}",
@@ -1039,7 +1049,7 @@ public class OperationTotalSyncByIceBergThreadPool extends Thread {
                     org.apache.iceberg.types.Type fieldType =
                             GlobalSetConfInfo.columnTypeCache.get(schemaKeyByParquet + "." + colNameLower);
                     if (fieldType != null) {
-                        Object val = convertValue(rawVal, fieldType, colNameLower);
+                        Object val = convertValue(rawVal, fieldType, colNameLower, schemaKeyByParquet);
                         if (val != null) record.setField(colNameLower, val);
                     }
                 }
